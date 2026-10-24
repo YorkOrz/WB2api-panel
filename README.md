@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
+  <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WB.png" alt="WB2API" width="120">
 </p>
 
-<h1 align="center">WorkBuddy2API Panel</h1>
+<h1 align="center">WB2API Panel</h1>
 
 <p align="center">
   <b>把腾讯 CodeBuddy 账号变成 OpenAI 兼容 API 的多账号网关 · 附 Web 管理面板</b><br>
@@ -22,7 +22,7 @@
 > **项目已停止维护（2026-10-21）**：后续不再更新代码、不跟进上游变化、不再处理新的 issue / PR。
 >
 > 原因有三：
-> 1. **上游已开始禁用反代**——WorkBuddy 对非官方客户端的识别与拦截正在收紧（通道校验、账号限制等），反代通道的稳定性与存活周期已不可控，继续做适配意义有限；
+> 1. **上游已开始禁用反代**——WB 对非官方客户端的识别与拦截正在收紧（通道校验、账号限制等），反代通道的稳定性与存活周期已不可控，继续做适配意义有限；
 > 2. **个人精力有限**——本项目本就是个人自用工具，无力长期跟进协议变化与风控对抗；
 > 3. **非法转卖泛滥**——发现大量批量注册小号、对外售卖额度、二次加壳 / 卡密分发的滥用行为，与本项目初衷完全相悖。
 >
@@ -30,7 +30,7 @@
 >
 > **维护方式披露**：本仓库近期的 issue / PR 处置、代码审查、测试与修复实现**大量由 AI 辅助完成**（自动化编码 agent），合并与发布决策由维护者作出。请知悉后再使用或参与贡献。
 
-> **本项目是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支**（fork）。
+> **本项目是 [Sliverkiss/WB2api](https://github.com/Sliverkiss/WB2api) 的增强分支**（fork）。
 > 上游仓库现已删除；本项目**已同步至上游删库前的最后一次更新**（`ea8b1e5`），此后由本分支独立维护演进。
 > 在上游基础上重构了可视化运维层；差异概览见 [与上游的差异](#-与上游的差异)，上游设计的精巧之处（账号池调度、错误分类、提示词体系）原样保留，详见下文。
 
@@ -38,7 +38,7 @@
 
 ## 使用声明（必读）
 
-本项目（含上游 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api)，下同）的开发初衷只有一个：**方便个人管理自己的 CodeBuddy 账号**——自动签到、保活、给自己的本地工具提供一个 OpenAI 兼容入口。它是免费、开源、按「原样」提供的个人自用工具。
+本项目（含上游 [Sliverkiss/WB2api](https://github.com/Sliverkiss/WB2api)，下同）的开发初衷只有一个：**方便个人管理自己的 CodeBuddy 账号**——自动签到、保活、给自己的本地工具提供一个 OpenAI 兼容入口。它是免费、开源、按「原样」提供的个人自用工具。
 
 近期我们发现有人将本项目用于以下行为：
 
@@ -57,7 +57,7 @@
 
 ## 项目简介
 
-WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾讯 CodeBuddy（`copilot.tencent.com`）账号包装为统一的 `/v1/chat/completions` 服务。
+WB2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾讯 CodeBuddy（`copilot.tencent.com`）账号包装为统一的 `/v1/chat/completions` 服务。
 
 - 官方不提供 OpenAI 形态的开放 API，本项目通过 **OAuth 设备授权**（面板「添加账号」或 `login.sh`）获取账号凭证，在网关侧做 token 自动刷新、账号池调度与流量治理；
 - 面向 **个人多账号** 场景：多账号共享、单号故障自动换号、冷却 / 熔断防止雪崩、会话粘性保证多轮上下文不跳号；
@@ -118,7 +118,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 ### 实现原理（简述）
 
-任务计分走 `/v2/report` 行为上报，但**不同任务认不同客户端指纹**：CLI 指纹（`www.codebuddy.cn`）、桌面指纹（`copilot.tencent.com` + `WorkBuddy/5.5.6` UA + `workbuddy-desktop` 事件族）、web 指纹（`www.workbuddy.cn` + `x-client-platform: web`）。网关为每类任务构造对应指纹的判据事件链（`internal/upstream/desktop.go`）；专家类任务额外要求真实专家 id 与真实对话回执（`internal/upstream/streak.go` 之外的 expert 序列）。上报 200 ≠ 计分——面板在执行后轮询任务进度，达标即自动调用 Web 域领奖接口。
+任务计分走 `/v2/report` 行为上报，但**不同任务认不同客户端指纹**：CLI 指纹（`www.codebuddy.cn`）、桌面指纹（`copilot.tencent.com` + `WB/5.5.6` UA + `WB-desktop` 事件族）、web 指纹（`www.WB.cn` + `x-client-platform: web`）。网关为每类任务构造对应指纹的判据事件链（`internal/upstream/desktop.go`）；专家类任务额外要求真实专家 id 与真实对话回执（`internal/upstream/streak.go` 之外的 expert 序列）。上报 200 ≠ 计分——面板在执行后轮询任务进度，达标即自动调用 Web 域领奖接口。
 
 > ⚠️ 行为事件按天幂等：重复点「一键完成」不会重复扣资源，已达标的任务自动跳过。
 
@@ -163,7 +163,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 ## 🆚 与上游的差异
 
-本分支相对 [上游 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证）：
+本分支相对 [上游 master](https://github.com/Sliverkiss/WB2api) 的增量（均已在真实多账号环境验证）：
 
 ### 新增
 
@@ -192,7 +192,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 上游改动 | 吸收内容 |
 |---|---|
 | 净化增强 | `tool_calls.arguments` 盲区修复（content=null 的工具调用轮此前完全漏净化）、裸 `11128` 反探测改写、桌面版身份句（逗号形态）漏网修复、反馈句整句改写 |
-| 出站头族 | UA 对齐官方三段式 `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<ver>`（默认 5.5.4/2.137.1，可配）；`X-IDE-*` 用量归属四头 + `X-Agent-Purpose`（`client_name` 配 `WorkBuddy` 即对齐官方桌面端）；`X-Device-Token` 设备风控头（auth 每号 / config / 文件三源）；`X-IDE-Version` 补齐 |
+| 出站头族 | UA 对齐官方三段式 `WB/<ver> WB/<ver> CLI/<ver>`（默认 5.5.4/2.137.1，可配）；`X-IDE-*` 用量归属四头 + `X-Agent-Purpose`（`client_name` 配 `WB` 即对齐官方桌面端）；`X-Device-Token` 设备风控头（auth 每号 / config / 文件三源）；`X-IDE-Version` 补齐 |
 | 并发修复 | 客户端 IP 改按请求参数传递（消除共享字段竞态）；billing 单段 UA 形态 |
 | 签到幂等 | `IsAlreadyCheckin` 识别"今天已签到"（code=10001/14001），调度日志不再把重复签到当失败 |
 | 粘性按模型判活 | 会话绑定的账号被 6004 模型级限额后，换模型请求自动解绑重分配（治"限额后换不动号"）；`/healthz` 探活计入模型豁免形态（治"全号被单模型限流探活误报 503"） |
@@ -208,7 +208,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 flowchart LR
     Client["客户端 / SDK\nOpenAI 兼容请求"] --> H
 
-    subgraph GWI["WorkBuddy2API 网关 :7863"]
+    subgraph GWI["WB2API 网关 :7863"]
         H["HTTP Handler\n鉴权 · 请求体上限 · 提示词改写 · 轮转"] --> P
         H --> S
         P["账号池\n快过期加权 · 成本分层 · 熔断 · 冷却 · 租约"] --> U
@@ -244,16 +244,16 @@ mkdir -p auths data && cp config.example.json config.json
 #    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
 
 # 2. 拉取并运行
-docker run -d --name workbuddy2api \
+docker run -d --name WB2api \
   -p 7863:7863 -e TZ=Asia/Shanghai \
   -v ./auths:/app/auths -v ./data:/app/data -v ./config.json:/app/config.json \
-  ghcr.io/linguo2625469/workbuddy2api-panel:latest
+  ghcr.io/linguo2625469/WB2api-panel:latest
 
 # 3. 健康检查（无可用账号时返回 503）
 curl -s http://localhost:7863/healthz
 ```
 
-> **首次发布后须将包设为公开**：GitHub 仓库页 → Packages → `workbuddy2api-panel` →
+> **首次发布后须将包设为公开**：GitHub 仓库页 → Packages → `WB2api-panel` →
 > Package settings → Change visibility → Public，否则拉取需要 `docker login ghcr.io`。
 >
 > 镜像 tag 规则：`main` 分支推送 `latest` / `main` / `sha-xxxxxx`；打 `v*` tag 额外发布
@@ -263,8 +263,8 @@ curl -s http://localhost:7863/healthz
 
 ```bash
 # 1. 克隆
-git clone https://github.com/linguo2625469/workbuddy2api-panel.git
-cd workbuddy2api-panel
+git clone https://github.com/linguo2625469/WB2api-panel.git
+cd WB2api-panel
 
 # 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
 cp config.example.json config.json
@@ -275,7 +275,7 @@ docker compose up -d --build
 
 # 4. 健康检查（无可用账号时返回 503）
 curl -s http://localhost:7863/healthz
-# {"healthy":0,"total":0,"service":"workbuddy2api"}
+# {"healthy":0,"total":0,"service":"WB2api"}
 ```
 
 启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
@@ -331,7 +331,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o credit ./cmd/credit
 
 ```bash
 ./login.sh
-# 按提示在浏览器打开授权链接 → 回到终端确认 → 凭证落盘 auths/workbuddy-<uid>.json
+# 按提示在浏览器打开授权链接 → 回到终端确认 → 凭证落盘 auths/WB-<uid>.json
 ```
 
 `login.sh` 内置授权 URL 获取 + 浏览器登录 + token 轮询 + 首次签到 + 凭证落盘 + 容器重启，全程无 PKCE（state 由服务端签发）。账号池在容器启动时用 `auths/` 目录自动对齐，新增凭证文件即自动发现。
@@ -401,7 +401,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `upstream.timeout_seconds` | `120` | 短 RPC（刷新 / 签到 / 余额 / 模型列表）总时长上限 |
 | `upstream.header_timeout_seconds` | 回落 `timeout_seconds` | 聊天首字节前（响应头）上限 |
 | `upstream.idle_timeout_seconds` | `300` | 聊天流中空闲上限（活跃续命，静默断流） |
-| `upstream.user_agent` | 空 | 出站 User-Agent 覆盖（空 = 现状 `CLI/2.63.2 CodeBuddy/2.63.2`）。官网「使用端」列按出站 UA 服务端归因；官方 WorkBuddy 桌面 UA 为 `WorkBuddy/<version>`，需要时可配 |
+| `upstream.user_agent` | 空 | 出站 User-Agent 覆盖（空 = 现状 `CLI/2.63.2 CodeBuddy/2.63.2`）。官网「使用端」列按出站 UA 服务端归因；官方 WB 桌面 UA 为 `WB/<version>`，需要时可配 |
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体黑名单指纹脱敏 |
 | `models.hidden` | `[]` | 模型黑名单：不对外暴露的模型。裸名=两域都藏；`"cn:xxx"`/`"global:xxx"`=只藏该域。`GET /v1/models` 列表过滤 + `POST /v1/chat/completions` 点名拒绝（400 `model_unavailable`）。面板保存后热生效 |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`append` = 开头连续 system/developer 块后插网关提示词（既有消息逐字不动）；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
@@ -802,12 +802,12 @@ http://127.0.0.1:7863/panel/
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 
 ```json
-{"healthy": 2, "total": 3, "service": "workbuddy2api"}
+{"healthy": 2, "total": 3, "service": "WB2api"}
 ```
 
-响应同时带 `X-Service: workbuddy2api` 头。这两个身份标识用于区分**本网关**与同端口上可能残留的其他服务——对方即使返回 2xx 也不会带该字段 / 头，宿主探测据此避免"假成功"。
+响应同时带 `X-Service: WB2api` 头。这两个身份标识用于区分**本网关**与同端口上可能残留的其他服务——对方即使返回 2xx 也不会带该字段 / 头，宿主探测据此避免"假成功"。
 
-**宿主健康探测指引**：强校验（推荐）用 `/status` + `api_key`——只有持有正确 `api_key` 的本网关返回 200，其他服务返回 401 / 404；弱校验（不适合持 key 的负载均衡器）用 `/healthz` + `service` 字段判据（`/healthz` 恒无鉴权，`service == "workbuddy2api"` 才算命中本网关）。容器自带 `HEALTHCHECK` 用的就是弱校验（仅进程内自检，够用）。
+**宿主健康探测指引**：强校验（推荐）用 `/status` + `api_key`——只有持有正确 `api_key` 的本网关返回 200，其他服务返回 401 / 404；弱校验（不适合持 key 的负载均衡器）用 `/healthz` + `service` 字段判据（`/healthz` 恒无鉴权，`service == "WB2api"` 才算命中本网关）。容器自带 `HEALTHCHECK` 用的就是弱校验（仅进程内自检，够用）。
 
 ### 流式行为细节
 
@@ -847,9 +847,9 @@ http://127.0.0.1:7863/panel/
 | `activity/growth/lottery/draw` | POST | 抽奖一次（`{client_token}`，消耗 1 次） |
 | `activity/growth/tasks` | GET | 任务列表（含 reward_credit/reward_energy/progress） |
 | `activity/growth/tasks/accept` | POST | 接受任务（`{"task_codes":[...]}`） |
-| `activity/growth/tasks/<task_code>/claim` | POST | **领取任务奖励**（任务码在路径、无 body；**Web 域 `www.workbuddy.cn`**，非 CLI 域——这是领奖能成功的关键） |
+| `activity/growth/tasks/<task_code>/claim` | POST | **领取任务奖励**（任务码在路径、无 body；**Web 域 `www.WB.cn`**，非 CLI 域——这是领奖能成功的关键） |
 
-出站请求统一携带 `CLI/2.63.2 CodeBuddy/2.63.2` UA（可被 `upstream.user_agent` 覆盖）；聊天请求带账号头（`X-User-Id` 等），**永不携带 `X-Refresh-Token`**（该头只出现在 token 刷新请求）。领奖请求额外带 `x-client-platform: web` 与 workbuddy.cn 的 Origin/Referer。
+出站请求统一携带 `CLI/2.63.2 CodeBuddy/2.63.2` UA（可被 `upstream.user_agent` 覆盖）；聊天请求带账号头（`X-User-Id` 等），**永不携带 `X-Refresh-Token`**（该头只出现在 token 刷新请求）。领奖请求额外带 `x-client-platform: web` 与 WB.cn 的 Origin/Referer。
 
 ## 请求级日志
 
@@ -926,7 +926,7 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 账号管理
 
-- 多账号复制 `auths/workbuddy-<uid>.json` 即可，池启动时自动对齐目录
+- 多账号复制 `auths/WB-<uid>.json` 即可，池启动时自动对齐目录
 - Session 失效账号被禁用（`disabled_reason` 透出在 `/status`）后，可用 `./login.sh` 重新登录覆盖凭证；已持久化 `disabled=true` 的账号可在源码侧调用 `Pool.ReviveDisabled(uid)` 复活（`state.json` 中清除 `disabled` 标志）
 - 备份 = `auths/`（凭证）+ `data/state.json`（池状态：积分 / 冷却 / 计数）；配置 Upstash 后状态另镜像至 Redis（7 天 TTL）
 
@@ -934,7 +934,7 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 1. 凭据管理（auths）
 
-- **位置**：`./auths`（`auth_dir` 可配），文件名 `workbuddy-<uid>.json`
+- **位置**：`./auths`（`auth_dir` 可配），文件名 `WB-<uid>.json`
 - **内容**：明文 `accessToken` / `refreshToken` + 账号元信息（`account.uid` / `enterpriseId` / `nickname`）
 - **权限**：容器内以 `app` 用户（uid 10001）运行；token 刷新由 `SaveAtomic` 以 `0600` 原子写回（tmp + rename）；`login.sh` 首次落盘遵循登录 umask，建议手动 `chmod 600 auths/*.json`
 - **切勿提交 git**：`.gitignore` 已排除 `auths/`、`data/`、`backups/`、`config.json`、`*.key`、`*.pem`、`*.env`、`docs/` 及除 README 外的全部 `*.md` 工作文档
@@ -1004,9 +1004,9 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 
 默认 `prompt.mode=custom` 已用网关自有提示词替换客户端 system，从源头消除大部分误报；用户 / assistant 消息中的指纹串由 `features.sanitize_blacklist_fingerprints` 清洗，两层叠加。`passthrough` 模式下首遇拦截会自动换 Degraded 中性提示词同请求重试一次。
 
-### 如何让官网「使用端」列显示为 WorkBuddy？
+### 如何让官网「使用端」列显示为 WB？
 
-官网「使用端」列按出站请求 UA 服务端归因。配置 `upstream.user_agent: "WorkBuddy/2.x.x"`（或环境变量 `WB2A_USER_AGENT`）即可改写全部出站请求的 UA；默认保持 `CLI/2.63.2 CodeBuddy/2.63.2` 现状（指纹净化考虑，可配而非改死）。
+官网「使用端」列按出站请求 UA 服务端归因。配置 `upstream.user_agent: "WB/2.x.x"`（或环境变量 `WB2A_USER_AGENT`）即可改写全部出站请求的 UA；默认保持 `CLI/2.63.2 CodeBuddy/2.63.2` 现状（指纹净化考虑，可配而非改死）。
 
 ## 关键断言 ↔ 代码出处
 
@@ -1044,7 +1044,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 本项目采用 [MIT License](LICENSE) 开源协议。
 
 - 允许任意使用、复制、修改、合并、发布、分发、再授权及销售
-- 再分发（源码或二进制形式）时，请保留原仓库的 MIT 版权声明与许可声明（如在 NOTICE 或 README 中注明原始出处 `https://github.com/Sliverkiss/workbuddy2api`）
+- 再分发（源码或二进制形式）时，请保留原仓库的 MIT 版权声明与许可声明（如在 NOTICE 或 README 中注明原始出处 `https://github.com/Sliverkiss/WB2api`）
 - 本项目不授予任何上游（CodeBuddy / 腾讯）接口或服务的权利；使用者仍需自行遵守上游服务条款
 
 ### 按地区配置账号池调度
