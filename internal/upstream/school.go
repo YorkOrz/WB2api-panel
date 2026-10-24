@@ -12,6 +12,8 @@ package upstream
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -58,6 +60,16 @@ const mpReportPath = "/v2/report"
 // schoolOpenDayActivityID 开学季/校园日活动 id（事件 activityId 字段值，两域共用）。
 const schoolOpenDayActivityID = "school_open_day_2026"
 
+// deriveMPMachineID 基于账号 UID 稳定派生 UUID 格式的设备 machineId（同一账号稳定幂等，不同账号相互隔离）。
+func deriveMPMachineID(uid string) string {
+	if uid == "" {
+		return "0655736a-607f-4d9d-b430-58176ee9a090"
+	}
+	sum := sha256.Sum256([]byte("mp-machine:" + uid))
+	h := hex.EncodeToString(sum[:16])
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+}
+
 // mpEventBase 小程序埋点公共指纹（appservice wQ()+Ao() 对齐）。
 func mpEventBase(a *auth.Auth) map[string]any {
 	return map[string]any{
@@ -72,7 +84,7 @@ func mpEventBase(a *auth.Auth) map[string]any {
 		"os":           "windows",
 		"osVersion":    "11",
 		"arch":         "x64",
-		"machineId":    "0655736a-607f-4d9d-b430-58176ee9a090",
+		"machineId":    deriveMPMachineID(a.UID),
 		"timezone":     "Asia/Shanghai",
 		"userId":       a.UID,
 		"userNickname": a.Nickname,
@@ -171,6 +183,12 @@ func MiniExpertUseEvent(expertID, expertName, expertType string) map[string]any 
 		"expertTitle": expertName, "type": "send_message",
 		"characterCount": 12, "expertType": expertType,
 	}
+}
+
+// ReportMPExpertUse 向 www.codebuddy.cn/v2/report 上报小程序专家体验事件（expert_actual_use）。
+func (c *Client) ReportMPExpertUse(a *auth.Auth, expertID, expertTitle string) error {
+	ev := MiniExpertUseEvent(expertID, expertTitle, "agent")
+	return c.ReportMPEvent(a, ev)
 }
 
 // MiniChatModelEvent mp 对话事件 + 模型字段（Sequential_Tasks_5「使用 GLM5.2」判据

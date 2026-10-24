@@ -1601,7 +1601,11 @@ const AUTO_TASKS = {
   'Sequential_Tasks_4': '小程序定时任务（预留，每日零点解锁一环）：accept → 定时任务创建事件 → 领奖（判据待解锁验证）',
   'Sequential_Tasks_5': '小程序使用 GLM5.2（预留）：accept → 带模型字段的 mini 对话上报 → 领奖（判据待解锁验证）',
   'Sequential_Tasks_6': '小程序十次对话（预留）：accept → mini 对话上报 ×target（自动补差额）→ 领奖',
-  'Sequential_Tasks_7': '体验灵感功能（预留，疑 PC 口径）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）'
+  'Sequential_Tasks_7': '体验灵感功能（预留，疑 PC 口径）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）',
+  'expert_use_maidehao': '体验「中国电商运营专家」（ex_GDl31WahyIH0）：accept → expert_actual_use 上报 → 领奖（+50c+5e）',
+  'expert_use_douyinyin': '体验「抖音策略师」（ex_FbY5nlWTqDod）：accept → expert_actual_use 上报 → 领奖（+50c+5e）',
+  'expert_use_shangjia_xuanchuan': '体验「商家宣传页与海报设计师」（ex_Weo3x2EZuSDm）：accept → expert_actual_use 上报 → 领奖（+50c+5e）',
+  'expert_use_bowangwang': '体验「直播电商教练」（ex_WZY136wV5aMt）：accept → expert_actual_use 上报 → 领奖（+50c+5e）'
 };
 
 function openTasks(uid) {
@@ -1680,9 +1684,11 @@ async function loadTasks() {
         : t.locked ? '<span class="tag mute">未解锁</span>'
         : t.accept_status === 'accepted' ? '<span class="tag mute">进行中</span>'
         : '<span class="tag mute">未接受</span>';
+      const isAuto = AUTO_TASKS[t.task_code] || (t.task_code && t.task_code.startsWith('expert_use_')) || (t.jump_url && /expertId(?:=|%3D)ex_/.test(t.jump_url));
+      const autoTip = AUTO_TASKS[t.task_code] || '一键体验专家并领取奖励';
       const acted = t.claimed || t.locked ? ''
         : t.claimable ? '<button class="xs primary" data-t="claim" data-c="' + esc(t.task_code) + '">领取</button>'
-        : AUTO_TASKS[t.task_code] ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(AUTO_TASKS[t.task_code]) + '">一键完成</button>'
+        : isAuto ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(autoTip) + '">一键完成</button>'
         : t.accept_status === 'accepted' ? ''
         : '<button class="xs" data-t="accept" data-c="' + esc(t.task_code) + '">接受</button>';
       // 操作指引（description/task_desc）挂 title 提示：如何完成交给用户看

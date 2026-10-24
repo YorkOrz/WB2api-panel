@@ -29,6 +29,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -174,16 +175,105 @@ var autoActions = []autoAction{
 		Desc:     "体验灵感功能（预留，疑 PC 口径 +500c+5e）：accept → 灵感事件组（PC+mp 双形态）→ 领奖（判据待解锁验证）",
 		run:      runSequentialPlaybook,
 	},
+	{
+		TaskCode: "expert_use_maidehao",
+		Desc:     "体验「中国电商运营专家」（ex_GDl31WahyIH0）：accept → expert_actual_use 上报 → 领奖（+50c+5e）",
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runSingleExpertUse(p, a, "expert_use_maidehao", "ex_GDl31WahyIH0", "中国电商运营专家")
+		},
+	},
+	{
+		TaskCode: "expert_use_douyinyin",
+		Desc:     "体验「抖音策略师」（ex_FbY5nlWTqDod）：accept → expert_actual_use 上报 → 领奖（+50c+5e）",
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runSingleExpertUse(p, a, "expert_use_douyinyin", "ex_FbY5nlWTqDod", "抖音策略师")
+		},
+	},
+	{
+		TaskCode: "expert_use_shangjia_xuanchuan",
+		Desc:     "体验「商家宣传页与海报设计师」（ex_Weo3x2EZuSDm）：accept → expert_actual_use 上报 → 领奖（+50c+5e）",
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runSingleExpertUse(p, a, "expert_use_shangjia_xuanchuan", "ex_Weo3x2EZuSDm", "商家宣传页与海报设计师")
+		},
+	},
+	{
+		TaskCode: "expert_use_bowangwang",
+		Desc:     "体验「直播电商教练」（ex_WZY136wV5aMt）：accept → expert_actual_use 上报 → 领奖（+50c+5e）",
+		run: func(p *Panel, a *auth.Auth) (string, error) {
+			return runSingleExpertUse(p, a, "expert_use_bowangwang", "ex_WZY136wV5aMt", "直播电商教练")
+		},
+	},
+}
+
+var reExpertID = regexp.MustCompile(`expertId(?:=|%3D)(ex_[A-Za-z0-9_]+)`)
+
+// extractExpertID 从 jump_url 中提取专家 ID（支持 raw = 与 urlencoded %3D）。
+func extractExpertID(jumpURL string) string {
+	m := reExpertID.FindStringSubmatch(jumpURL)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
 }
 
 // autoActionFor 查任务对应的动作；无则返回 nil（不可自动化）。
+// 动态通配：若 task_code 以 expert_use_ 开头，动态构造执行动作。
 func autoActionFor(code string) *autoAction {
+	code = strings.TrimSpace(code)
 	for i := range autoActions {
-		if autoActions[i].TaskCode == strings.TrimSpace(code) {
+		if autoActions[i].TaskCode == code {
 			return &autoActions[i]
 		}
 	}
+	if strings.HasPrefix(code, "expert_use_") {
+		return &autoAction{
+			TaskCode: code,
+			Desc:     "体验平台专家（动态通配）：提取专家 ID → expert_actual_use 上报 → 自动领奖（+50c+5e）",
+			run: func(p *Panel, a *auth.Auth) (string, error) {
+				return runDynamicExpertUse(p, a, code)
+			},
+		}
+	}
 	return nil
+}
+
+// autoActionForTask 结合任务对象的 JumpURL 做更宽泛的通配判断（jump_url 含 expertId=ex_）。
+func (p *Panel) autoActionForTask(a *auth.Auth, code string) *autoAction {
+	if act := autoActionFor(code); act != nil {
+		return act
+	}
+	if t, err := p.taskByCode(a, code); err == nil && t != nil {
+		if exID := extractExpertID(t.JumpURL); exID != "" {
+			return &autoAction{
+				TaskCode: code,
+				Desc:     fmt.Sprintf("体验平台专家（动态提取 %s）：expert_actual_use 上报 → 自动领奖", exID),
+				run: func(p *Panel, a *auth.Auth) (string, error) {
+					return runSingleExpertUse(p, a, code, exID, t.Title)
+				},
+			}
+		}
+	}
+	return nil
+}
+
+// HasAutoAction 报告任务是否支持自动完成（供前端或调度器快速判定）。
+func HasAutoAction(code, jumpURL string) bool {
+	code = strings.TrimSpace(code)
+	if autoActionFor(code) != nil {
+		return true
+	}
+	if strings.HasPrefix(code, "expert_use_") {
+		return true
+	}
+	if extractExpertID(jumpURL) != "" {
+		return true
+	}
+	return false
+}
+
+// CanAutoComplete 报告 Task 对象是否可自动完成。
+func CanAutoComplete(t upstream.Task) bool {
+	return HasAutoAction(t.TaskCode, t.JumpURL)
 }
 
 // autoActionIndex 任务在 autoActions 中的顺序（队列执行按依赖序排；未知返回大值）。
@@ -624,6 +714,90 @@ func runMiniExpert(p *Panel, a *auth.Auth) (string, error) {
 	return fmt.Sprintf("任务点亮并领取奖励（+%dc +%de）", credit, energy), nil
 }
 
+// sleepRandom 毫秒随机睡眠，模拟拟真人机交互并避免多账号同频请求风控。
+func sleepRandom(minMs, maxMs int) {
+	if maxMs <= minMs {
+		time.Sleep(time.Duration(minMs) * time.Millisecond)
+		return
+	}
+	n := minMs + rand.IntN(maxMs-minMs)
+	time.Sleep(time.Duration(n) * time.Millisecond)
+}
+
+// runSingleExpertUse 执行单个专家体验任务：accept → expert_actual_use 上报 → 等待计分 → 自动领奖。
+func runSingleExpertUse(p *Panel, a *auth.Auth, code, expertID, expertTitle string) (string, error) {
+	t, err := p.taskByCode(a, code)
+	if err != nil {
+		return "", err
+	}
+	if t == nil {
+		return "未下发该任务（活动可能已结束）", nil
+	}
+	if t.Claimed {
+		return "已领取", nil
+	}
+	target := t.Target
+	if target <= 0 {
+		target = 1
+	}
+	// 已达标（含 completed 未领）：直接领奖。
+	if t.Current >= target || t.AcceptStatus == "completed" {
+		credit, energy, err := p.cfg.Upstream.ClaimReward(a, code)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已领取奖励（+%dc +%de）", credit, energy), nil
+	}
+
+	// 1. 先 accept（若为 not_accepted 或空）
+	if t.AcceptStatus == "not_accepted" || t.AcceptStatus == "" {
+		if err := p.cfg.Upstream.AcceptTasks(a, []string{code}); err != nil {
+			log.Printf("autotask %s %s: accept 失败: %v（继续尝试上报）", logfmt.Label(a.UID, a.Nickname), code, err)
+		}
+		sleepRandom(1500, 2500)
+	}
+
+	// 2. 上报 expert_actual_use 行为事件
+	if err := p.cfg.Upstream.ReportMPExpertUse(a, expertID, expertTitle); err != nil {
+		return "", fmt.Errorf("上报 expert_actual_use 失败: %w", err)
+	}
+
+	// 3. 轮询确认任务状态变为 completed 并自动领奖
+	sleepRandom(2000, 3000)
+	t2, err2 := p.taskByCodeWaiting(a, code)
+	if err2 == nil && t2 != nil {
+		if t2.Claimable || t2.Current >= target || t2.AcceptStatus == "completed" {
+			sleepRandom(1200, 2000)
+			credit, energy, err := p.cfg.Upstream.ClaimReward(a, code)
+			if err != nil {
+				return "", fmt.Errorf("已达标但领奖失败: %w", err)
+			}
+			return fmt.Sprintf("已完成并领取奖励（+%dc +%de）", credit, energy), nil
+		}
+	}
+	return "已上报专家体验事件（等待异步计分入账）", nil
+}
+
+// runDynamicExpertUse 针对动态 expert_use_* 任务从 JumpURL 提取 ID 后执行。
+func runDynamicExpertUse(p *Panel, a *auth.Auth, code string) (string, error) {
+	t, err := p.taskByCode(a, code)
+	if err != nil {
+		return "", err
+	}
+	if t == nil {
+		return "未下发该任务", nil
+	}
+	expertID := extractExpertID(t.JumpURL)
+	if expertID == "" {
+		return "", fmt.Errorf("任务 %s 的 jump_url (%s) 未能提取到专家 ID", code, t.JumpURL)
+	}
+	title := t.Title
+	if title == "" {
+		title = code
+	}
+	return runSingleExpertUse(p, a, code, expertID, title)
+}
+
 // accountTaskAuto 一键完成单个任务：执行对应动作 → 回读进度 → 汇报结果。
 func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
@@ -647,7 +821,7 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "task_code required")
 		return
 	}
-	act := autoActionFor(body.TaskCode)
+	act := p.autoActionForTask(a, body.TaskCode)
 	if act == nil {
 		writeErr(w, http.StatusNotImplemented,
 			"该任务需要客户端内交互（无对应接口），无法自动完成；请按任务说明在官方客户端操作")
@@ -1264,6 +1438,29 @@ func (p *Panel) runAutoAll(a *auth.Auth) []map[string]any {
 		out = append(out, item)
 		time.Sleep(reportGap) // 项间节流
 	}
+
+	// 动态通配：处理不在 autoActions 固定表中但匹配 expert_use_* / jump_url 的新专家任务
+	if tasks, err := p.cfg.Upstream.ListTasks(a); err == nil {
+		for _, t := range tasks {
+			if !t.Claimed && !t.Locked && autoActionFor(t.TaskCode) == nil && CanAutoComplete(t) {
+				act := p.autoActionForTask(a, t.TaskCode)
+				if act != nil {
+					item := map[string]any{"task_code": t.TaskCode, "desc": act.Desc}
+					msg, rerr := act.run(p, a)
+					if rerr != nil {
+						item["status"] = "error"
+						item["message"] = rerr.Error()
+					} else {
+						item["status"] = "done"
+						item["message"] = msg
+					}
+					out = append(out, item)
+					time.Sleep(reportGap)
+				}
+			}
+		}
+	}
+
 	return out
 }
 
