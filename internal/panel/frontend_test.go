@@ -179,48 +179,21 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
-// 模型限流时间必须同时支持上游 reset_at、网关 until 和无重置时间三种形态。
-func TestAppJSRateLimitMeta(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed; rate limit formatting test skipped")
-	}
-	script := `const fs = require('fs');
-const vm = require('vm');
-const src = fs.readFileSync(process.argv[2], 'utf8');
-const start = src.indexOf('function dur(');
-const end = src.indexOf('function rateLimitRowsHtml');
-if (start < 0 || end < 0) throw new Error('rate limit helpers not found');
-const ctx = { Date, Number, String, Math };
-vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.rateLimitMeta=rateLimitMeta;', ctx);
-const now = new Date(2026, 8, 28, 14, 0, 0).getTime();
-const reset = new Date(2026, 8, 28, 16, 0, 0).getTime();
-const until = new Date(2026, 8, 28, 15, 0, 0).getTime();
-const rate = ctx.rateLimitMeta({ model: 'glm-5.3', kind: 'rate_limit', reset_at: new Date(reset).toISOString(), until: new Date(until).toISOString() }, now);
-const unavailable = ctx.rateLimitMeta({ model: 'missing', kind: 'model_unavailable', until: new Date(until).toISOString() }, now);
-const unknown = ctx.rateLimitMeta({ model: 'glm-5.3', kind: 'rate_limit' }, now);
-process.stdout.write(JSON.stringify({
-  rate: rate.detail,
-  unavailable: unavailable.detail,
-  unknown: unknown.detail,
-}));`
-	f, err := os.CreateTemp(t.TempDir(), "rate-limit-format-*.cjs")
+// 账号状态只表达账号级可用性；逐模型冷却统一由下方「模型锁池」展示。
+// 若账号行再次铺开 rate_limited_models，会把整行撑高并与锁池重复。
+func TestAppJSAccountStatusDefersModelLocks(t *testing.T) {
+	src, err := os.ReadFile("app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteString(script); err != nil {
-		t.Fatal(err)
+	text := string(src)
+	start := strings.Index(text, "function renderAccounts(")
+	end := strings.Index(text, "function renderModelLocks(")
+	if start < 0 || end <= start {
+		t.Fatal("renderAccounts region not found")
 	}
-	f.Close()
-	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
-	if err != nil {
-		t.Fatalf("rate-limit formatting node test failed: %v\n%s", err, out)
-	}
-	// issue #171 问题二：until < resetAt 时主文字双时刻明示、倒计时跟随 until。
-	const want = `{"rate":"网关 2026-09-28 15:00 起重试（剩余 1时00分） · 上游称 2026-09-28 16:00 恢复","unavailable":"预计 1时00分 后重试","unknown":"预计解封时间未知"}`
-	if strings.TrimSpace(string(out)) != want {
-		t.Fatalf("rate-limit formatting=%s want %s", out, want)
+	if strings.Contains(text[start:end], "rate_limited_models") {
+		t.Fatal("renderAccounts must not render per-model lock details; keep them in model lock pool")
 	}
 }
 
@@ -577,7 +550,7 @@ func TestAppJSTimeRangeQuery(t *testing.T) {
 const vm = require('vm');
 const src = fs.readFileSync(process.argv[2], 'utf8');
 const start = src.indexOf('const TRANGE_PRESETS');
-const end = src.indexOf('function rateLimitMeta');
+const end = src.indexOf('function formatTokenCount');
 if (start < 0 || end < 0 || end < start) throw new Error('trange helpers not found');
 const host = { innerHTML: '' };
 const ctx = {

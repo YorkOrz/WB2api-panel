@@ -248,49 +248,6 @@ function trangeLabel(id) {
     String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') : '…';
   return f(st.from) + ' → ' + f(st.to);
 }
-function rateLimitMeta(row, now) {
-  const model = String(row && row.model || '未知模型');
-  const kind = String(row && row.kind || 'rate_limit');
-  const resetAt = parseAPITime(row && row.reset_at);
-  const until = parseAPITime(row && row.until);
-  const deadline = resetAt || until;
-  const remaining = deadline > now ? Math.round((deadline - now) / 1000) : 0;
-  if (kind === 'model_unavailable') {
-    return {
-      model,
-      kind,
-      detail: remaining ? '预计 ' + dur(remaining) + ' 后重试' : '等待重新探测',
-      title: model + '\n模型当前不可用' + (deadline ? '\n最早重试：' + fmtLocalDateTime(deadline) : ''),
-    };
-  }
-  const title = [model, resetAt ? '上游重置：' + fmtLocalDateTime(resetAt) : '上游重置：时间未知'];
-  if (until && resetAt && until < resetAt) {
-    // 双时钟（issue #171 问题二）：黄框出现/消失由 until 决定（网关为防超长
-    // 限流拖死全池，把重试封顶在 now+softRateMax），主文字却按 resetAt 显示，
-    // 导致「写的解封时间」与「实际掉框时刻」不一致。此时主文字同时明示两个
-    // 时刻与口径，倒计时跟随 until（与实际掉框一致，也与「模型与档位」页
-    // 锁池表的 until 口径对齐）。
-    const retryIn = until > now ? Math.round((until - now) / 1000) : 0;
-    detail = '网关 ' + fmtLocalDateTime(until) + ' 起重试' + (retryIn ? '（剩余 ' + dur(retryIn) + '）' : '') +
-      ' · 上游称 ' + fmtLocalDateTime(resetAt) + ' 恢复';
-    title.push('网关最早重试：' + fmtLocalDateTime(until));
-  } else {
-    detail = resetAt
-      ? '预计 ' + fmtLocalDateTime(resetAt) + ' 解封' + (remaining ? '（剩余 ' + dur(remaining) + '）' : '')
-      : (until ? '预计 ' + fmtLocalDateTime(until) + ' 恢复（剩余 ' + dur(remaining) + '）' : '预计解封时间未知');
-  }
-  return { model, kind, detail, title: title.join('\n') };
-}
-function rateLimitRowsHtml(rows, now) {
-  const list = Array.isArray(rows) ? rows.filter(row => row && row.model) : [];
-  if (!list.length) return '';
-  return '<div class="rate-limits">' + list.map(row => {
-    const m = rateLimitMeta(row, now);
-    return '<div class="rate-limit ' + (m.kind === 'model_unavailable' ? 'model-unavailable' : '') +
-      '" title="' + esc(m.title) + '"><b>' + esc(m.model) + '</b><span>' + esc(m.detail) + '</span></div>';
-  }).join('') + '</div>';
-}
-
 function formatTokenCount(tokens) {
   if (tokens == null || tokens === '') return '—';
   const n = Number(tokens);
@@ -401,7 +358,6 @@ function renderAccounts(list) {
       tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
     } else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
     const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
-    const rateLimits = rateLimitRowsHtml(s.rate_limited_models, Date.now());
     const short = s.uid.length > 16 ? s.uid.slice(0, 16) + '…' : s.uid;
     // 企业版不限量：上游 limitNum == -1，网关以 credits_total=-1 透出（见 upstream
     // enterpriseUnlimitedTotal）。此时剩余额度不参与展示，直接标「不限」。
@@ -442,7 +398,7 @@ function renderAccounts(list) {
     return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
       '<td class="who"><div class="nm">' + remarkName(s.uid, s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') + '</div><div class="id"' + (gaTitle ? ' title="' + esc(gaTitle) + '"' : '') + '>' + esc(short) + gaText + '</div></td>' +
-      '<td>' + tag + note + rateLimits + '</td>' +
+      '<td>' + tag + note + '</td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
       '<td class="num">' + (s.in_flight || 0) + '</td>' +
