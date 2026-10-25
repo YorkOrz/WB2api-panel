@@ -170,6 +170,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/pause", p.withAuth(p.accountPause))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/resume", p.withAuth(p.accountResume))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/global_activity", p.withAuth(p.accountGlobalActivity))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.withAuth(p.accountBalance))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.withAuth(p.accountRemove))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
@@ -185,6 +186,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/checkin_all", p.withAuth(p.checkinAll))
 	p.mux.HandleFunc("POST /panel/api/travel_all", p.withAuth(p.travelAll))
 	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))
+	p.mux.HandleFunc("POST /panel/api/global_activity_all", p.withAuth(p.globalActivityAll))
 	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withAuth(p.keepaliveAll))
 	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
@@ -273,14 +275,23 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"paused":          paused,
 		"in_flight_full":  inFlightFull,
 		"accounts":        p.cfg.Pool.List(),
+		"global_activity": p.globalActivityStatus(),
 		// model_locks 模型级限流全清单（哪些模型不能用、锁了几个号、还要锁多久）：
 		// 与 accounts 的账号池视图互补，前端「模型锁池」表直接渲染。无锁时为 null。
 		"model_locks": p.cfg.Pool.ModelLockView(),
 		// 到期提醒快照的节奏与年龄：界面轮询是 5 秒级，但卡片数据只随余额后台刷新
 		// 更新（默认每 5 分钟）——把这两个数透出，前端才能如实标注「x 分钟前更新」。
-		"balance_refresh_sec":    p.balanceRefreshSec(),
-		"balance_refreshed_at":   p.balanceRefreshedAt(),
+		"balance_refresh_sec":  p.balanceRefreshSec(),
+		"balance_refreshed_at": p.balanceRefreshedAt(),
 	})
+}
+
+// globalActivityStatus 返回当前进程内 Global 每日活跃的最近结果；无调度器时为空。
+func (p *Panel) globalActivityStatus() []scheduler.GlobalActivityResult {
+	if p.cfg.Scheduler == nil {
+		return nil
+	}
+	return p.cfg.Scheduler.GlobalActivityStatus()
 }
 
 // balanceRefreshSec 余额后台刷新间隔（秒）；无调度器/未开启时为 0。
@@ -746,6 +757,45 @@ func (p *Panel) activityAll(w http.ResponseWriter, r *http.Request) {
 	}
 	go p.cfg.Scheduler.RunActivityNow()
 	log.Printf("panel: 手动全量活跃上报已触发")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+}
+
+// accountGlobalActivity 手工补跑单个 Global 账号：先读热力图，未点亮才上报。
+func (p *Panel) accountGlobalActivity(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Scheduler == nil {
+		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		return
+	}
+	uid := r.PathValue("uid")
+	a := p.cfg.Pool.AuthByUID(uid)
+	if a == nil {
+		writeErr(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if !a.IsGlobal() {
+		writeErr(w, http.StatusBadRequest, "not a Global account")
+		return
+	}
+	row, err := p.cfg.Scheduler.RunGlobalActivityForUID(uid)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	status := http.StatusOK
+	if row.Status == "failed" {
+		status = http.StatusBadGateway
+	}
+	writeJSON(w, status, map[string]any{"ok": row.Status != "failed", "result": row})
+}
+
+// globalActivityAll 手工触发全部 Global 账号的幂等每日活跃补跑（异步）。
+func (p *Panel) globalActivityAll(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Scheduler == nil {
+		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		return
+	}
+	go p.cfg.Scheduler.RunGlobalActivityNow()
+	log.Printf("panel: 手动国际版每日活跃已触发")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
 

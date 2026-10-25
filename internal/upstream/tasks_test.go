@@ -83,3 +83,30 @@ func TestClaimRewardNotCompleted(t *testing.T) {
 		t.Fatal("want error for not-completed task")
 	}
 }
+
+// TestParseGrowthTasksGlobalMilestones Global 任务使用 code/url/status 字段，
+// 与 CN 的 task_code/jump_url 不同；解析器必须保留任务码和跳转地址。
+func TestParseGrowthTasksGlobalMilestones(t *testing.T) {
+	data := json.RawMessage(`{
+		"tasks": [
+			{"task_id":1,"code":"first_chat","title":"完成一次对话","status":"available","url":"workbuddy://task/first_chat"},
+			{"task_id":3,"code":"wechat_linked","title":"链接微信","status":"available"}
+		]
+	}`)
+	tasks, err := parseGrowthTasks(data)
+	if err != nil {
+		t.Fatalf("parseGrowthTasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks=%d want 2", len(tasks))
+	}
+	if tasks[0].TaskCode != "first_chat" || tasks[0].Status != "available" {
+		t.Errorf("first task=%+v, want code/status from Global schema", tasks[0])
+	}
+	if tasks[0].JumpURL != "workbuddy://task/first_chat" {
+		t.Errorf("jump_url=%q, want Global url fallback", tasks[0].JumpURL)
+	}
+	if tasks[1].TaskCode != "wechat_linked" || tasks[1].JumpURL != "" {
+		t.Errorf("second task=%+v, want code without fabricated URL", tasks[1])
+	}
+}

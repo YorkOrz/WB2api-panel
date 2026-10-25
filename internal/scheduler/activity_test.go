@@ -466,10 +466,15 @@ func TestRunActivityNowReportsGlobalAccount(t *testing.T) {
 	}))
 	defer cnSrv.Close()
 	globalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/report" {
+		switch r.URL.Path {
+		case "/activity/growth/heatmap":
+			w.Write([]byte(`{"code":0,"data":{"cells":[{"date":"2026-10-25","score":0}]}}`))
+		case "/v2/report":
 			globalHits.Add(1)
+			w.Write([]byte(`{"code":0,"msg":"OK"}`))
+		default:
+			http.Error(w, "not found", 404)
 		}
-		w.Write([]byte(`{"code":0,"msg":"OK"}`))
 	}))
 	defer globalSrv.Close()
 
@@ -510,10 +515,15 @@ func TestRunActivityNowMixedPoolReportsBoth(t *testing.T) {
 	}))
 	defer cnSrv.Close()
 	globalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/report" {
+		switch r.URL.Path {
+		case "/activity/growth/heatmap":
+			w.Write([]byte(`{"code":0,"data":{"cells":[{"date":"2026-10-25","score":0}]}}`))
+		case "/v2/report":
 			globalHits.Add(1)
+			w.Write([]byte(`{"code":0,"msg":"OK"}`))
+		default:
+			http.Error(w, "not found", 404)
 		}
-		w.Write([]byte(`{"code":0,"msg":"OK"}`))
 	}))
 	defer globalSrv.Close()
 

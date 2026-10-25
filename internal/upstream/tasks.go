@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
@@ -57,8 +58,9 @@ type Task struct {
 }
 
 // ListTasks 拉取全量任务列表（默认口径，无端标记头）。
-// 响应形如 data.tasks[]，元素字段随任务类型变化（progress 可能是 {current,target} 或平铺），
-// 这里做宽松解析：两种形状都尝试。
+// 响应形如 data.tasks[]，元素字段随任务类型变化：CN 任务使用 task_code/jump_url，
+// Global 里程碑任务使用 code/url；progress 可能是 {current,target} 或平铺。
+// 这里同时兼容两套字段，避免 Global 任务被解析成空 code / 0 进度。
 func (c *Client) ListTasks(a *auth.Auth) ([]Task, error) {
 	data, err := c.growthJSON(a, http.MethodGet, tasksListPath, nil)
 	if err != nil {
@@ -148,6 +150,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 	var resp struct {
 		Tasks []struct {
 			TaskCode     string          `json:"task_code"`
+			Code         string          `json:"code"`
 			Title        string          `json:"title"`
 			Description  string          `json:"description"`
 			TaskDesc     string          `json:"task_desc"`
@@ -158,6 +161,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			TaskType     string          `json:"task_type"`
 			Tag          string          `json:"tag"`
 			JumpURL      string          `json:"jump_url"`
+			URL          string          `json:"url"`
 			Locked       bool            `json:"locked"`
 			AcceptStatus string          `json:"accept_status"`
 			Status       string          `json:"status"`
@@ -182,9 +186,17 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 				cur, tgt = pr.Current, pr.Target
 			}
 		}
+		taskCode := strings.TrimSpace(t.TaskCode)
+		if taskCode == "" {
+			taskCode = strings.TrimSpace(t.Code)
+		}
+		jumpURL := strings.TrimSpace(t.JumpURL)
+		if jumpURL == "" {
+			jumpURL = strings.TrimSpace(t.URL)
+		}
 		claimed := t.AcceptStatus == "claimed"
 		out = append(out, Task{
-			TaskCode:     t.TaskCode,
+			TaskCode:     taskCode,
 			Title:        t.Title,
 			Description:  t.Description,
 			TaskDesc:     t.TaskDesc,
@@ -194,7 +206,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			RewardBuddy:  t.RewardBuddy,
 			TaskType:     t.TaskType,
 			Tag:          t.Tag,
-			JumpURL:      t.JumpURL,
+			JumpURL:      jumpURL,
 			Locked:       t.Locked,
 			Target:       tgt,
 			Current:      cur,

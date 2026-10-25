@@ -68,13 +68,15 @@ type Config struct {
 	} `json:"cooldown"`
 
 	Schedule struct {
-		CheckinHours   []int `json:"checkin_hours"`   // [9,21]
-		TravelHours    []int `json:"travel_hours"`    // [9,21]
-		ActivityHours  []int `json:"activity_hours"`  // [10]
-		KeepaliveHours []int `json:"keepalive_hours"` // [22]
-		BlackcatHours  []int `json:"blackcat_hours"`  // [23] 夜猫子窗口（23:00–08:00 计数）
-		GrowthHours    []int `json:"growth_hours"`    // [1] 成长任务队列（Sequential 族每日零点解锁，01:00 自动扫描执行）
-		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/BlackcatEnabled 显式禁用开关（缺省 true）。
+		CheckinHours        []int `json:"checkin_hours"`         // [9,21]
+		TravelHours         []int `json:"travel_hours"`          // [9,21]
+		ActivityHours       []int `json:"activity_hours"`        // [10] CN 活跃上报
+		GlobalActivityHours []int `json:"global_activity_hours"` // [8,12,16,20] Global 每日活跃补跑
+		KeepaliveHours      []int `json:"keepalive_hours"`       // [22]
+		BlackcatHours       []int `json:"blackcat_hours"`        // [23] 夜猫子窗口（23:00–08:00 计数）
+		GrowthHours         []int `json:"growth_hours"`          // [1] 成长任务队列（Sequential 族每日零点解锁，01:00 自动扫描执行）
+		// CheckinEnabled/TravelEnabled/ActivityEnabled/GlobalActivityEnabled/KeepaliveEnabled/BlackcatEnabled
+		// 显式禁用开关（缺省 true）。
 		//
 		// 为什么用独立 bool 而不是空数组/哨兵值表意"禁用"：
 		//   - 空数组与 null 在老语义里已被"未配置 → 回落默认"占用，改判会静默翻转
@@ -83,14 +85,15 @@ type Config struct {
 		//   - 开关与取值解耦：禁用时仍保留用户显式配的小时，重新启用无需补配。
 		//   - 无需猜测哨兵（[-1] 之类），非法小时一律报错并提示改用本开关。
 		// 旧 config 里的该键因 JSON 未知字段而自然忽略，不报错。
-		CheckinEnabled   bool `json:"checkin_enabled"`   // 缺省 true；false = 关签到
-		TravelEnabled    bool `json:"travel_enabled"`    // 缺省 true；false = 完全停猫猫旅行
-		ActivityEnabled  bool `json:"activity_enabled"`  // 缺省 true；false = 停活跃上报
-		KeepaliveEnabled bool `json:"keepalive_enabled"` // 缺省 true；false = 关 token 保活
-		BlackcatEnabled  bool `json:"blackcat_enabled"`  // 缺省 true；false = 关夜猫子
-		GrowthEnabled    bool `json:"growth_enabled"`    // 缺省 true；false = 关成长任务自动排程
+		CheckinEnabled        bool `json:"checkin_enabled"`         // 缺省 true；false = 关签到
+		TravelEnabled         bool `json:"travel_enabled"`          // 缺省 true；false = 完全停猫猫旅行
+		ActivityEnabled       bool `json:"activity_enabled"`        // 缺省 true；false = 停 CN 活跃上报
+		GlobalActivityEnabled bool `json:"global_activity_enabled"` // 缺省 true；false = 停 Global 每日活跃
+		KeepaliveEnabled      bool `json:"keepalive_enabled"`       // 缺省 true；false = 关 token 保活
+		BlackcatEnabled       bool `json:"blackcat_enabled"`        // 缺省 true；false = 关夜猫子
+		GrowthEnabled         bool `json:"growth_enabled"`          // 缺省 true；false = 关成长任务自动排程
 
-		// IncludeDisabledInTasks 让「保号类」定时任务（签到 / 活跃上报 / token 保活 /
+		// IncludeDisabledInTasks 让「保号类」定时任务（签到 / CN+Global 活跃上报 / token 保活 /
 		// 余额刷新）对**已禁用（disabled）**的账号也执行。
 		//
 		// 为什么需要它：面板「禁用」的语义是「不再参与选号」（见面板确认文案），但这四类
@@ -287,6 +290,7 @@ func Default() *Config {
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}
+	c.Schedule.GlobalActivityHours = []int{8, 12, 16, 20}
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Schedule.BlackcatHours = []int{23}
 	c.Schedule.GrowthHours = []int{1}
@@ -296,6 +300,7 @@ func Default() *Config {
 	c.Schedule.GrowthEnabled = true
 	c.Schedule.TravelEnabled = true
 	c.Schedule.ActivityEnabled = true
+	c.Schedule.GlobalActivityEnabled = true
 	c.Schedule.KeepaliveEnabled = true
 	c.Schedule.BlackcatEnabled = true
 	c.Schedule.BalanceRefreshEnabled = true
@@ -620,6 +625,9 @@ func (c *Config) normalize() error {
 	if len(c.Schedule.ActivityHours) == 0 {
 		c.Schedule.ActivityHours = []int{10}
 	}
+	if len(c.Schedule.GlobalActivityHours) == 0 {
+		c.Schedule.GlobalActivityHours = []int{8, 12, 16, 20}
+	}
 	if len(c.Schedule.KeepaliveHours) == 0 {
 		c.Schedule.KeepaliveHours = []int{22}
 	}
@@ -689,6 +697,9 @@ func (c *Config) validateScheduleHours() error {
 		return err
 	}
 	if err := checkHourRange("schedule.activity_hours", "activity_enabled", c.Schedule.ActivityHours); err != nil {
+		return err
+	}
+	if err := checkHourRange("schedule.global_activity_hours", "global_activity_enabled", c.Schedule.GlobalActivityHours); err != nil {
 		return err
 	}
 	if err := checkHourRange("schedule.keepalive_hours", "keepalive_enabled", c.Schedule.KeepaliveHours); err != nil {

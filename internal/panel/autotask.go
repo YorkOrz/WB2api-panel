@@ -805,6 +805,10 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		return
 	}
+	if a.IsGlobal() {
+		writeErr(w, http.StatusUnprocessableEntity, "Global milestone tasks do not have a verified automation protocol")
+		return
+	}
 	// 企业上下文门控（企业版 / 企业切换会话）：行为事件会被上游静默丢弃或
 	// 直接 403，执行任何成长任务都是零收益白跑（含真实对话配额）——直接拒绝
 	// 并给出修复路径，不再让用户对着「已上报但进度 0/x」猜原因
@@ -1469,6 +1473,10 @@ func (p *Panel) accountTaskAutoAll(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	if a.IsGlobal() {
+		writeErr(w, http.StatusUnprocessableEntity, "Global milestone tasks do not have a verified automation protocol")
 		return
 	}
 	// 企业上下文门控：与 accountTaskAuto 同口径（企业版 / 企业切换会话下成长任务

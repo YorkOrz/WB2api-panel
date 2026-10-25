@@ -187,22 +187,24 @@ func main() {
 	upstream.SetModelCatalogPath(stateSibling(cfg.StateFile, "model.json"))
 
 	sch := scheduler.New(scheduler.Config{
-		Pool:           p,
-		Upstream:       up,
-		CheckinHours:   cfg.Schedule.CheckinHours,
-		TravelHours:    cfg.Schedule.TravelHours,
-		ActivityHours:  cfg.Schedule.ActivityHours,
-		KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		BlackcatHours:  cfg.Schedule.BlackcatHours,
-		GrowthHours:    cfg.Schedule.GrowthHours,
+		Pool:                p,
+		Upstream:            up,
+		CheckinHours:        cfg.Schedule.CheckinHours,
+		TravelHours:         cfg.Schedule.TravelHours,
+		ActivityHours:       cfg.Schedule.ActivityHours,
+		GlobalActivityHours: cfg.Schedule.GlobalActivityHours,
+		KeepaliveHours:      cfg.Schedule.KeepaliveHours,
+		BlackcatHours:       cfg.Schedule.BlackcatHours,
+		GrowthHours:         cfg.Schedule.GrowthHours,
 		// 快过期积分优先消耗：签到/余额刷新按此窗口分桶（issue:积分过期）。
-		ExpiringSoonWindow: cfg.ExpiringSoonDur,
-		CheckinDisabled:    !cfg.Schedule.CheckinEnabled,
-		TravelDisabled:     !cfg.Schedule.TravelEnabled,
-		ActivityDisabled:   !cfg.Schedule.ActivityEnabled,
-		KeepaliveDisabled:  !cfg.Schedule.KeepaliveEnabled,
-		BlackcatDisabled:   !cfg.Schedule.BlackcatEnabled,
-		GrowthDisabled:     !cfg.Schedule.GrowthEnabled,
+		ExpiringSoonWindow:     cfg.ExpiringSoonDur,
+		CheckinDisabled:        !cfg.Schedule.CheckinEnabled,
+		TravelDisabled:         !cfg.Schedule.TravelEnabled,
+		ActivityDisabled:       !cfg.Schedule.ActivityEnabled,
+		GlobalActivityDisabled: !cfg.Schedule.GlobalActivityEnabled,
+		KeepaliveDisabled:      !cfg.Schedule.KeepaliveEnabled,
+		BlackcatDisabled:       !cfg.Schedule.BlackcatEnabled,
+		GrowthDisabled:         !cfg.Schedule.GrowthEnabled,
 		// 保号类四任务是否覆盖禁用账号（缺省 false = 禁用即跳过，保持既有行为）。
 		IncludeDisabledInTasks: cfg.Schedule.IncludeDisabledInTasks,
 	})
@@ -220,9 +222,15 @@ func main() {
 	}
 	switch {
 	case !cfg.Schedule.ActivityEnabled:
-		log.Printf("活跃上报已禁用（schedule.activity_enabled=false）")
+		log.Printf("CN 活跃上报已禁用（schedule.activity_enabled=false）")
 	default:
-		log.Printf("活跃上报已启用：%v 点（每日 1 次，点亮连登 + 解锁 first_buddy）", cfg.Schedule.ActivityHours)
+		log.Printf("CN 活跃上报已启用：%v 点（每日 1 次，点亮连登 + 解锁 first_buddy）", cfg.Schedule.ActivityHours)
+	}
+	switch {
+	case !cfg.Schedule.GlobalActivityEnabled:
+		log.Printf("国际版每日活跃已禁用（schedule.global_activity_enabled=false）")
+	default:
+		log.Printf("国际版每日活跃已启用：%v 点（热力图未点亮才上报）", cfg.Schedule.GlobalActivityHours)
 	}
 	if !cfg.Schedule.KeepaliveEnabled {
 		log.Printf("token 保活已禁用（schedule.keepalive_enabled=false）")
@@ -546,6 +554,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		!newCfg.Schedule.CheckinEnabled, !newCfg.Schedule.TravelEnabled,
 		!newCfg.Schedule.ActivityEnabled, !newCfg.Schedule.KeepaliveEnabled, !newCfg.Schedule.BlackcatEnabled,
 		!newCfg.Schedule.GrowthEnabled)
+	sch.SetGlobalActivitySchedule(newCfg.Schedule.GlobalActivityHours, !newCfg.Schedule.GlobalActivityEnabled)
 	sch.SetBalanceInterval(newCfg.BalanceRefreshInterval)
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetIncludeDisabledInTasks(newCfg.Schedule.IncludeDisabledInTasks)

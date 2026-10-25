@@ -22,14 +22,17 @@ import (
 // 任务开关用「禁用」命名而非「启用」：零值 Config 即四类任务都启用（hours 回落默认），
 // 与引入开关前的行为逐字一致（老调用方/老测试无需改动）。
 type Config struct {
-	Pool           *pool.Pool
-	Upstream       *upstream.Client
-	CheckinHours   []int // 默认 [9, 21]
-	TravelHours    []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
-	ActivityHours  []int // 默认 [10]
-	KeepaliveHours []int // 默认 [22]
-	BlackcatHours  []int // 默认 [23]：夜猫子（23:00–08:00 计数窗口）
-	GrowthHours    []int // 默认 [1]：成长任务队列（Sequential 族每日零点解锁一环，
+	Pool          *pool.Pool
+	Upstream      *upstream.Client
+	CheckinHours  []int // 默认 [9, 21]
+	TravelHours   []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
+	ActivityHours []int // 默认 [10]
+	// GlobalActivityHours International 每日活跃补跑时点。空表示不排程；
+	// cmd/server 的配置默认值是 [8,12,16,20]，手工触发不受空值影响。
+	GlobalActivityHours []int
+	KeepaliveHours      []int // 默认 [22]
+	BlackcatHours       []int // 默认 [23]：夜猫子（23:00–08:00 计数窗口）
+	GrowthHours         []int // 默认 [1]：成长任务队列（Sequential 族每日零点解锁一环，
 	// 01:00 自动扫描+执行；避开零点整防解锁竞态）
 
 	// ExpiringSoonWindow 快过期积分窗口：签到/余额刷新查余额时，把到期时间
@@ -44,6 +47,9 @@ type Config struct {
 	TravelDisabled bool
 	// ActivityDisabled 显式关闭活跃上报排程（schedule.activity_enabled=false）。
 	ActivityDisabled bool
+	// GlobalActivityDisabled 显式关闭国际版每日活跃排程
+	// （schedule.global_activity_enabled=false）。
+	GlobalActivityDisabled bool
 	// KeepaliveDisabled 显式关闭 token 保活排程（schedule.keepalive_enabled=false）。
 	KeepaliveDisabled bool
 	// BlackcatDisabled 显式关闭夜猫子排程（schedule.blackcat_enabled=false）。
@@ -71,6 +77,14 @@ type Config struct {
 // Scheduler 调度器。
 type Scheduler struct {
 	cfg Config
+
+	// globalRunMu 串行化国际版每日活跃的定时与手工触发。热力图聚合有延迟，
+	// 两个并发读都可能看到 score=0；串行 + 当日已发记录避免同一号重复上报。
+	// globalStateMu 只保护结果快照，overview 轮询不会等待整轮网络请求。
+	globalRunMu            sync.Mutex
+	globalStateMu          sync.RWMutex
+	globalActivityLast     map[string]GlobalActivityResult
+	globalActivityReported map[string]string
 
 	// mu/adoptTried 领养当日失败记录：uid → 自然日（CST）。门槛未达的账号当日不再重试，
 	// 避免同日多趟对上游重试轰炸；进程重启即清零（无需持久化）。
@@ -117,11 +131,13 @@ func New(cfg Config) *Scheduler {
 		cfg.BlackcatHours = []int{23}
 	}
 	return &Scheduler{
-		cfg:           cfg,
-		adoptTried:    make(map[string]string),
-		rearmSchedule: make(chan struct{}, 1),
-		rearmBalance:  make(chan struct{}, 1),
-		rearmSweep:    make(chan struct{}, 1),
+		cfg:                    cfg,
+		adoptTried:             make(map[string]string),
+		globalActivityLast:     make(map[string]GlobalActivityResult),
+		globalActivityReported: make(map[string]string),
+		rearmSchedule:          make(chan struct{}, 1),
+		rearmBalance:           make(chan struct{}, 1),
+		rearmSweep:             make(chan struct{}, 1),
 	}
 }
 
@@ -206,6 +222,18 @@ func (s *Scheduler) Reconfigure(checkinHours, travelHours, activityHours, keepal
 	poke(s.rearmBalance)
 }
 
+// SetGlobalActivitySchedule 热更新国际版每日活跃时点/开关。
+// 独立 setter 避免继续膨胀 Reconfigure 的位置参数。
+func (s *Scheduler) SetGlobalActivitySchedule(hours []int, disabled bool) {
+	s.schedMu.Lock()
+	if len(hours) > 0 {
+		s.cfg.GlobalActivityHours = hours
+	}
+	s.cfg.GlobalActivityDisabled = disabled
+	s.schedMu.Unlock()
+	poke(s.rearmSchedule)
+}
+
 // poke 非阻塞发一次唤醒信号（已有待处理信号则忽略，语义等价）。
 func poke(ch chan struct{}) {
 	select {
@@ -236,6 +264,7 @@ const (
 	taskCheckin taskKind = iota
 	taskTravel
 	taskActivity
+	taskGlobalActivity
 	taskKeepalive
 	taskBlackcat
 	taskGrowth
@@ -249,9 +278,11 @@ func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
 	s.schedMu.Lock()
 	checkinHours, keepaliveHours, blackcatHours := s.cfg.CheckinHours, s.cfg.KeepaliveHours, s.cfg.BlackcatHours
 	travelHours, activityHours := s.cfg.TravelHours, s.cfg.ActivityHours
+	globalActivityHours := s.cfg.GlobalActivityHours
 	checkinOff, keepaliveOff, blackcatOff := s.cfg.CheckinDisabled, s.cfg.KeepaliveDisabled, s.cfg.BlackcatDisabled
 	growthHours, growthOff := s.cfg.GrowthHours, s.cfg.GrowthDisabled
 	travelOff, activityOff := s.cfg.TravelDisabled, s.cfg.ActivityDisabled
+	globalActivityOff := s.cfg.GlobalActivityDisabled
 	s.schedMu.Unlock()
 
 	type slot struct {
@@ -267,6 +298,9 @@ func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
 	}
 	if !activityOff {
 		slots = append(slots, slot{nextFire(now, activityHours), taskActivity})
+	}
+	if !globalActivityOff && len(globalActivityHours) > 0 {
+		slots = append(slots, slot{nextFire(now, globalActivityHours), taskGlobalActivity})
 	}
 	if !keepaliveOff {
 		slots = append(slots, slot{nextFire(now, keepaliveHours), taskKeepalive})
@@ -423,6 +457,8 @@ func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
 				s.RunTravelNow()
 			case taskActivity:
 				s.runActivity(ctx)
+			case taskGlobalActivity:
+				s.runScheduledGlobalActivity(ctx)
 			case taskKeepalive:
 				s.RunKeepaliveNow()
 			case taskBlackcat:
@@ -521,17 +557,17 @@ func (s *Scheduler) RunCheckinNow() {
 	s.RunStreakBonusNow()
 }
 
-// RunActivityNow 立即对池内所有可用账号执行一次对话活跃上报。
+// RunActivityNow 立即对池内所有可用账号执行活跃维护：CN 走原有盲上报，
+// Global 走热力图幂等补跑。
 // 禁用账号默认跳过（schedule.include_disabled_in_tasks 打开时一并上报）；
 // 无 AccessToken 的跳过；账号间限速 activityAccountDelay。
-// CN 与 global 账号**都上报**（PR #45 实测国际版 /v2/report 在 workbuddy.ai 上
-// code=0 OK，点亮连登）；一条上报同时点亮 growth 连登 + 解锁 first_buddy 任务。
-// 上报成功后续跑 streak 自检（checkActivityStreak）：回读连登天数，发现
-// 「上报 200 但 streak 没涨」的静默丢弃（只读 oracle，不做重试）。
+// CN 上报成功后继续跑 streak 自检（checkActivityStreak）：回读连登天数，
+// 发现「上报 200 但 streak 没涨」的静默丢弃（只读 oracle，不做重试）。
 // RunActivityNow 是无 ctx 的外部入口（面板/测试一次性触发）；排程主循环走
 // runActivity（ctx 取消时立即放弃剩余账号，不等限速睡满）。
 func (s *Scheduler) RunActivityNow() {
 	s.runActivity(context.Background())
+	s.RunGlobalActivityNow()
 }
 
 // runActivity 活跃上报遍历，随 ctx 取消立即退出。
@@ -555,11 +591,11 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 		if a.IsEnterpriseSession() {
 			continue
 		}
-		// global 账号同样上报（PR #45 实测国际版 /v2/report 在 workbuddy.ai 上 code=0 OK，
-		// 点亮连登）；realmBase 路由/头由 upstream.billingJSON/BillingHeaders 按 realm 切，
-		// 无需改动 upstream。此处曾按「D4 门控：global 无活跃体系」跳过 global，实测该
-		// 判断不成立——国际版 /v2/report 可用，跳过即国际版账号永远点不亮连登（上游
-		// a190252 同口径修复）。checkin/travel 的 global 门控不受影响，仍跳过。
+		// Global 由独立排程先读热力图再决定是否上报。这里只处理 CN，避免共享
+		// activity_hours 的多时点把 CN 重复计分，也避免 Global 绕过幂等门禁。
+		if a.IsGlobal() {
+			continue
+		}
 		if !first {
 			if !sleepCtx(ctx, activityAccountDelay) {
 				return // 优雅停机：不等限速睡满，剩余账号下轮再报
@@ -679,7 +715,7 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 				EarliestRemaining: earliestRemaining,
 				ExpiryBuckets:     poolExpiryBuckets(buckets),
 			})
-			}(a, st.UID)
+		}(a, st.UID)
 	}
 	wg.Wait()
 	s.lastBalanceRefresh.Store(time.Now().UnixNano())

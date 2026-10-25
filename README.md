@@ -389,12 +389,14 @@ curl -s http://localhost:7863/v1/search/messages \
 | `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
 | `schedule.checkin_hours` | `[9, 21]` | 每日本地时区整点签到 + 余额查询解冻。空数组 / `null` = 未配置回落默认（不是禁用） |
 | `schedule.travel_hours` | `[9, 21]` | 每日本地时区整点推进猫猫旅行状态机（领养 / 派出 / 领奖） |
-| `schedule.activity_hours` | `[10]` | 每日本地时区整点对话活跃上报（点亮连登 + 解锁 `first_buddy`） |
+| `schedule.activity_hours` | `[10]` | CN 每日本地时区整点对话活跃上报（点亮连登 + 解锁 `first_buddy`） |
+| `schedule.global_activity_hours` | `[8, 12, 16, 20]` | Global 每日活跃补跑时点；定时入口随机错峰 0-4 分钟，每趟先查热力图，当天未点亮才发一次 `/v2/report` |
 | `schedule.keepalive_hours` | `[22]` | 每日本地时区整点刷新 token 保活 |
 | `schedule.blackcat_hours` | `[23]` | 每日本地时区整点夜猫子补足（23:00–08:00 计数窗口） |
 | `schedule.checkin_enabled` | `true` | 签到总开关；`false` 真正关闭 |
 | `schedule.travel_enabled` | `true` | 猫猫旅行总开关（独立于签到） |
-| `schedule.activity_enabled` | `true` | 活跃上报总开关 |
+| `schedule.activity_enabled` | `true` | CN 活跃上报总开关 |
+| `schedule.global_activity_enabled` | `true` | Global 每日活跃总开关 |
 | `schedule.keepalive_enabled` | `true` | token 保活总开关 |
 | `schedule.blackcat_enabled` | `true` | 夜猫子总开关 |
 | `schedule.include_disabled_in_tasks` | `false` | 让**保号类**四任务（签到 / 活跃上报 / token 保活 / 余额刷新）对**已禁用**账号也执行——「禁用」只关选号，不停保号。`false`（默认）保持「禁用的跳过」 |
@@ -551,19 +553,20 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 
 ### 定时任务
 
-五类任务各自独立排程、各有开关，互不影响。容器时区由 `TZ` 控制（compose 默认 `Asia/Shanghai`）。
+六类任务各自独立排程、各有开关，互不影响。容器时区由 `TZ` 控制（compose 默认 `Asia/Shanghai`）。
 
 | 任务 | 开关（默认 true） | 时刻（默认） | 行为 |
 |---|---|---|---|
 | 签到 | `schedule.checkin_enabled` | `checkin_hours` `[9, 21]` 整点 | 签到 + 余额查询；余额恢复则解冻冷却账号。**末尾追加连登管家**（见下） |
-| 活跃上报 | `schedule.activity_enabled` | `activity_hours` `[10]` 整点 | 对话活跃上报（`chat_request_send` 事件，必须含 `userId`）；点亮连登 + 解锁 `first_buddy`；每号每天 1 次 |
+| CN 活跃上报 | `schedule.activity_enabled` | `activity_hours` `[10]` 整点 | 对话活跃上报（`chat_request_send` 事件，必须含 `userId`）；点亮连登 + 解锁 `first_buddy`；每号每天 1 次 |
+| Global 每日活跃 | `schedule.global_activity_enabled` | `global_activity_hours` `[8,12,16,20]` 后错峰 0-4 分钟 | **先读热力图**：当天 `score>0` 直接跳过，`score==0` 才发一次 `chat_request_send`；热力图失败不盲发，上报失败不在同轮重试 |
 | 猫猫旅行 | `schedule.travel_enabled` | `travel_hours` `[9, 21]` 整点 | 独立排程：无猫领养 / `idle` 派出 / `arrived` 领奖 |
 | 保活 | `schedule.keepalive_enabled` | `keepalive_hours` `[22]` 整点 | 全账号刷新 token；session 失效**连续 3 次**才自动禁用 |
 | 夜猫子 | `schedule.blackcat_enabled` | `blackcat_hours` `[23]` 整点 | **先查任务进度再决定**：`black_cat` 未达标才在 23:00–08:00 计数窗口内补足 glm-5.2 短对话（每天 1 次累计 3 天，漏跑次日窗口自动补） |
 
 #### 禁用账号与保号任务（`schedule.include_disabled_in_tasks`）
 
-缺省 `false`：禁用账号被上述**签到 / 活跃上报 / 保活 / 余额刷新**四任务跳过，与选号过滤一致。
+缺省 `false`：禁用账号被上述**签到 / CN 与 Global 活跃上报 / 保活 / 余额刷新**任务跳过，与选号过滤一致。
 
 面板「禁用」的语义是「**不再参与选号**」，但这四类任务此前会一并跳过禁用号——被禁用的账号因此拿不到签到积分、不续 token、余额也不再刷新；而 `ReenableIfCredits` 明确不复活 disabled 账号，等于签到这条唯一的自动回血路径也断了，只能人工点「解冻」。
 
@@ -616,7 +619,7 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 - **禁用不会擦除小时配置**：`*_hours` 原样保留，改回 `true` 即恢复原时点；小时值必须是 0-23，非法值启动即报错
 - 关签到会把「余额恢复即解冻」一起关掉，被硬冷却的账号只能等次日 04:00 自然到期
 
-#### 活跃上报（独立排程）
+#### CN 活跃上报（独立排程）
 
 对池内每个可用账号在 `activity_hours`（默认 `[10]` 整点）发送一条对话活跃上报（事件 `chat_request_send`，body 为数组，事件必须含 `userId`）：
 
@@ -626,6 +629,29 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 - 限速：账号间间隔 800ms（与旅行同口径）
 - **streak 自检**：上报成功后回读连登天数（只读 oracle），日志每号一行可 grep：`activity <uid>: streak days=N`。`days=0` 记 **warn**（`report OK but streak.days=0 (silent drop?)`，对应上游「200 但静默丢弃」）；回读失败记 warn 但不影响主流程（上报按天幂等，不重试，只观测）
 - 手动诊断 / 补跑用 `python3 scripts/probe_active.py`（只读探测；写操作默认 dry-run，需 `--yes`）
+
+#### Global 每日活跃（独立排程）
+
+Global 号不走 CN 签到，但成长中心热力图当天 `score>0` 会在次日发放每日 Bonus Pack。
+网关按 `global_activity_hours`（默认 `[8,12,16,20]`，定时入口随机错峰 0-4 分钟）
+执行以下幂等链路：
+
+1. `GET /activity/growth/heatmap`，取最后一个 cell 作为上游口径的“今天”；
+2. `score>0` → `already-lit`，不发上报；
+3. `score==0` → 发一条 `chat_request_send` 到 `/v2/report`；
+4. 热力图读取失败 → `failed`，不盲发；上报失败 → 本轮不重试，留给下个时点。
+
+热力图聚合有延迟，所以上报成功后可能短暂显示 `reported` 且 `lit=false`；下个时点会再次
+读取并转为 `already-lit`。多时点只用于补跑，进程内还会按 API 返回日期记录已成功上报，
+避免定时与手工入口并发时重复发送。面板账号行提供「国际活跃」手工补跑，顶部也提供批量入口。
+
+国际号「积分任务」展示的是里程碑列表（`first_chat` / `skill_installed` / `wechat_linked` /
+`expert_summoned` / `template_used`），字段口径为 `code/url/status`，与 CN 的
+`task_code/jump_url + accept/claim` 不同。面板对此只做只读展示并隐藏报名、领奖和自动完成按钮：
+`first_chat` 理论上由每日活跃事件推进；微信绑定应手工完成；其余动作尚未验证，不能宣称可自动完成。
+
+实现思路参考 MIT 项目 [`codebuddy-intl-cpa`](https://github.com/zidanefaqih/codebuddy-intl-cpa)
+的 Global 每日奖励实测路径；本项目复用现有 Go 上游事件体与双域路由，没有引入网页会话 Agent。
 
 #### 猫猫旅行（独立排程）
 

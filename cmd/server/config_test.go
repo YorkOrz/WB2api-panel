@@ -380,11 +380,17 @@ func TestScheduleEnabledByDefault(t *testing.T) {
 		t.Errorf("travel/activity enabled defaults want true/true, got %v/%v",
 			c.Schedule.TravelEnabled, c.Schedule.ActivityEnabled)
 	}
+	if !c.Schedule.GlobalActivityEnabled {
+		t.Error("global_activity_enabled default should be true")
+	}
 	if len(c.Schedule.TravelHours) != 2 || c.Schedule.TravelHours[0] != 9 || c.Schedule.TravelHours[1] != 21 {
 		t.Errorf("travel_hours=%v want [9,21]", c.Schedule.TravelHours)
 	}
 	if len(c.Schedule.ActivityHours) != 1 || c.Schedule.ActivityHours[0] != 10 {
 		t.Errorf("activity_hours=%v want [10]", c.Schedule.ActivityHours)
+	}
+	if len(c.Schedule.GlobalActivityHours) != 4 || c.Schedule.GlobalActivityHours[0] != 8 || c.Schedule.GlobalActivityHours[3] != 20 {
+		t.Errorf("global_activity_hours=%v want [8,12,16,20]", c.Schedule.GlobalActivityHours)
 	}
 }
 
@@ -404,6 +410,9 @@ func TestScheduleLegacyConfigKeepsRunning(t *testing.T) {
 	if !c.Schedule.TravelEnabled || !c.Schedule.ActivityEnabled {
 		t.Errorf("new switches must default true on legacy config: %+v", c.Schedule)
 	}
+	if !c.Schedule.GlobalActivityEnabled {
+		t.Errorf("global activity switch must default true on legacy config: %+v", c.Schedule)
+	}
 	if len(c.Schedule.CheckinHours) != 2 {
 		t.Errorf("checkin_hours=%v", c.Schedule.CheckinHours)
 	}
@@ -413,6 +422,9 @@ func TestScheduleLegacyConfigKeepsRunning(t *testing.T) {
 	}
 	if len(c.Schedule.ActivityHours) != 1 || c.Schedule.ActivityHours[0] != 10 {
 		t.Errorf("activity_hours=%v want default [10]", c.Schedule.ActivityHours)
+	}
+	if len(c.Schedule.GlobalActivityHours) != 4 {
+		t.Errorf("global_activity_hours=%v want default [8,12,16,20]", c.Schedule.GlobalActivityHours)
 	}
 }
 
@@ -470,6 +482,8 @@ func TestScheduleTravelActivityInvalidHoursRejected(t *testing.T) {
 		{`{"schedule":{"travel_hours":[-1]}}`, "travel_enabled"},
 		{`{"schedule":{"activity_hours":[24]}}`, "activity_enabled"},
 		{`{"schedule":{"activity_hours":[-1]}}`, "activity_enabled"},
+		{`{"schedule":{"global_activity_hours":[24]}}`, "global_activity_enabled"},
+		{`{"schedule":{"global_activity_hours":[-1]}}`, "global_activity_enabled"},
 	}
 	for _, tc := range cases {
 		dir := t.TempDir()
@@ -489,7 +503,7 @@ func TestScheduleTravelActivityInvalidHoursRejected(t *testing.T) {
 func TestScheduleTravelActivityExplicitHours(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
-	os.WriteFile(fp, []byte(`{"schedule":{"travel_hours":[9,21],"activity_hours":[11]}}`), 0o600)
+	os.WriteFile(fp, []byte(`{"schedule":{"travel_hours":[9,21],"activity_hours":[11],"global_activity_hours":[8,16]}}`), 0o600)
 	c, err := Load(fp)
 	if err != nil {
 		t.Fatal(err)
@@ -499,6 +513,9 @@ func TestScheduleTravelActivityExplicitHours(t *testing.T) {
 	}
 	if len(c.Schedule.ActivityHours) != 1 || c.Schedule.ActivityHours[0] != 11 {
 		t.Errorf("activity_hours=%v want [11]", c.Schedule.ActivityHours)
+	}
+	if len(c.Schedule.GlobalActivityHours) != 2 || c.Schedule.GlobalActivityHours[0] != 8 || c.Schedule.GlobalActivityHours[1] != 16 {
+		t.Errorf("global_activity_hours=%v want [8,16]", c.Schedule.GlobalActivityHours)
 	}
 }
 
@@ -524,8 +541,8 @@ func TestScheduleEmptyHoursFallsBackToDefault(t *testing.T) {
 	cases := map[string]string{
 		"absent":   `{}`,
 		"empty":    `{"schedule":{}}`,
-		"null":     `{"schedule":{"checkin_hours":null,"keepalive_hours":null,"travel_hours":null,"activity_hours":null}}`,
-		"emptyarr": `{"schedule":{"checkin_hours":[],"keepalive_hours":[],"travel_hours":[],"activity_hours":[]}}`,
+		"null":     `{"schedule":{"checkin_hours":null,"keepalive_hours":null,"travel_hours":null,"activity_hours":null,"global_activity_hours":null}}`,
+		"emptyarr": `{"schedule":{"checkin_hours":[],"keepalive_hours":[],"travel_hours":[],"activity_hours":[],"global_activity_hours":[]}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -547,6 +564,9 @@ func TestScheduleEmptyHoursFallsBackToDefault(t *testing.T) {
 			}
 			if len(c.Schedule.ActivityHours) != 1 || c.Schedule.ActivityHours[0] != 10 {
 				t.Errorf("activity_hours=%v want default [10]", c.Schedule.ActivityHours)
+			}
+			if len(c.Schedule.GlobalActivityHours) != 4 {
+				t.Errorf("global_activity_hours=%v want default [8,12,16,20]", c.Schedule.GlobalActivityHours)
 			}
 			if !c.Schedule.CheckinEnabled || !c.Schedule.KeepaliveEnabled {
 				t.Errorf("empty hours must not imply disabled: %+v", c.Schedule)

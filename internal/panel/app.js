@@ -6,7 +6,7 @@ const LS_REMARKS = 'wb2api.remarks.v1', LS_EXP_FOLD = 'wb2api.expfold.v1';
 let remarksCache = null;
 let theme = localStorage.getItem(LS_THEME) || 'auto';   // auto | light | dark
 let view = 'accounts';
-let overviewData = null, cfgLoaded = null;
+let overviewData = null, cfgLoaded = null, globalActivityByUID = {};
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
@@ -433,9 +433,15 @@ function renderAccounts(list) {
     const latency = formatLatency(tu.last_latency_ms);
     const rate = formatRate(tu.last_tokens_per_second);
     const usageTitle = '最近一次：' + req + ' 次 / ' + totalTok + ' / 延迟 ' + latency + ' / ' + rate;
+    const ga = globalActivityByUID[s.uid];
+    const gaLabel = ga ? ({ 'already-lit': '已点亮', reported: '已上报', failed: '失败', skipped: '跳过' }[ga.status] || ga.status) : '';
+    const gaText = s.realm === 'global' && ga
+      ? ' · 活跃 ' + esc(gaLabel) + (ga.day ? ' ' + esc(ga.day.slice(5)) : '')
+      : '';
+    const gaTitle = ga ? ['国际版每日活跃', '状态：' + ga.status, ga.day ? '日期：' + ga.day : '', 'score：' + (ga.score || 0), ga.detail || ''].filter(Boolean).join('\n') : '';
     return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
-      '<td class="who"><div class="nm">' + remarkName(s.uid, s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') + '</div><div class="id">' + esc(short) + '</div></td>' +
+      '<td class="who"><div class="nm">' + remarkName(s.uid, s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') + '</div><div class="id"' + (gaTitle ? ' title="' + esc(gaTitle) + '"' : '') + '>' + esc(short) + gaText + '</div></td>' +
       '<td>' + tag + note + rateLimits + '</td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
@@ -456,6 +462,8 @@ function renderAccounts(list) {
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '"' + (s.enterprise ? ' title="刷新企业版已分配额度（上游 get-enterprise-user-usage）"' : '') + '>' + (s.enterprise ? '额度' : '余额') + '</button>' +
         (s.enterprise ? '' :
           '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>') +
+        (s.realm === 'global' && !s.enterprise ?
+          '<button class="xs ghost" data-a="global-activity" data-u="' + esc(s.uid) + '" title="读取热力图；当天未点亮才补一条活跃事件">国际活跃</button>' : '') +
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : (s.paused ? '<button class="xs primary" data-a="resume" data-u="' + esc(s.uid) + '">恢复选号</button>'
                             : '<button class="xs ghost" data-a="pause" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额') + '">暂停选号</button>')) +
@@ -522,6 +530,8 @@ async function loadOverview(quiet) {
     const p = $('navPulse');
     p.className = 'pulse' + (d.healthy > 0 ? '' : (d.total ? ' warn' : ' bad'));
     $('accNote').textContent = d.in_flight_full ? d.in_flight_full + ' 个账号在途占满' : '';
+    globalActivityByUID = {};
+    (d.global_activity || []).forEach(r => { if (r && r.uid) globalActivityByUID[r.uid] = r; });
     const up = Math.floor(d.uptime_sec);
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
     renderAccounts(d.accounts || []);
@@ -562,6 +572,11 @@ $('accBody').addEventListener('click', async ev => {
       toast('已恢复选号', 'ok');
     } else if (a === 'tasks') {
       openTasks(u);
+    } else if (a === 'global-activity') {
+      const r = await api('accounts/' + encodeURIComponent(u) + '/global_activity', { method: 'POST' });
+      const x = r.result || {};
+      const label = ({ 'already-lit': '今日已点亮', reported: '已上报，等待热力图聚合', failed: '失败', skipped: '已跳过' }[x.status] || x.status || '完成');
+      toast('国际活跃：' + label + (x.day ? '（' + x.day + ' score=' + (x.score || 0) + '）' : ''), x.status === 'failed' ? 'err' : 'ok');
     } else if (a === 'remove') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/remove', { method: 'POST' });
       toast(r.file_error ? '已移除（凭证文件删除失败：' + r.file_error + '）' : '已移除', 'ok');
@@ -584,6 +599,10 @@ $('btnTravelAll').onclick = async () => {
 };
 $('btnActivityAll').onclick = async () => {
   try { await api('activity_all', { method: 'POST' }); toast('活跃上报已开始，结果见日志', 'ok'); }
+  catch (e) { toast(e.message, 'err'); }
+};
+$('btnGlobalActivityAll').onclick = async () => {
+  try { await api('global_activity_all', { method: 'POST' }); toast('国际版每日活跃检查已开始，结果见日志', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
 };
 
@@ -1134,6 +1153,7 @@ const CFG_MAP = {
   checkin_hours: ['schedule', 'checkin_hours'], checkin_enabled: ['schedule', 'checkin_enabled'], growth_hours: ['schedule', 'growth_hours'], growth_enabled: ['schedule', 'growth_enabled'],
   travel_hours: ['schedule', 'travel_hours'], travel_enabled: ['schedule', 'travel_enabled'],
   activity_hours: ['schedule', 'activity_hours'], activity_enabled: ['schedule', 'activity_enabled'],
+  global_activity_hours: ['schedule', 'global_activity_hours'], global_activity_enabled: ['schedule', 'global_activity_enabled'],
   keepalive_hours: ['schedule', 'keepalive_hours'], keepalive_enabled: ['schedule', 'keepalive_enabled'],
   balance_refresh_enabled: ['schedule', 'balance_refresh_enabled'], balance_refresh_minutes: ['schedule', 'balance_refresh_minutes'],
   task_sweep_enabled: ['schedule', 'task_sweep_enabled'], task_sweep_minutes: ['schedule', 'task_sweep_minutes'],
@@ -1571,7 +1591,7 @@ async function checkAuthGate() {
 start();
 
 /* ── 积分任务 ─────────────────────────────────────────────────────── */
-let taskUID = null;
+let taskUID = null, taskGlobal = false;
 
 // 可自动完成的任务（与后端 autoActions 表一致）：判据为行为事件、可经网关复现。
 // 其余任务需在官方客户端内交互，面板只展示指引（行 title 提示）。
@@ -1610,7 +1630,11 @@ const AUTO_TASKS = {
 
 function openTasks(uid) {
   taskUID = uid;
+  taskGlobal = false;
   $('taskWho').textContent = uid.slice(0, 16);
+  $('taskHint').textContent = '查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用。所有操作走网关，无需外部脚本。';
+  $('btnTaskAcceptAll').hidden = false;
+  $('btnTaskAutoAll').hidden = false;
   $('taskVeil').classList.add('on');
   $('btnTaskReload').hidden = false;
   loadTasks();
@@ -1663,6 +1687,12 @@ async function loadTasks() {
   try {
     const d = await api('accounts/' + encodeURIComponent(taskUID) + '/tasks');
     const list = d.tasks || [];
+    taskGlobal = d.realm === 'global';
+    $('taskHint').textContent = taskGlobal
+      ? '国际版里程碑任务：仅展示上游状态；微信绑定等操作请在官方客户端完成。'
+      : '查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用。所有操作走网关，无需外部脚本。';
+    $('btnTaskAcceptAll').hidden = taskGlobal;
+    $('btnTaskAutoAll').hidden = taskGlobal;
     if (!list.length) {
       st.className = 'state';
       st.textContent = '该账号暂无任务';
@@ -1679,14 +1709,21 @@ async function loadTasks() {
       if (t.energy) parts.push('+' + t.energy + ' 能');
       if (t.reward_buddy) parts.push('Buddy');
       const reward = parts.length ? parts.join(' ') : '—';
-      const badge = t.claimed ? '<span class="tag ok">已领取</span>'
+      const globalStatus = String(t.status || '').toLowerCase();
+      const badge = taskGlobal
+        ? (['completed', 'complete', 'claimed'].includes(globalStatus)
+          ? '<span class="tag ok">已完成</span>'
+          : globalStatus === 'available'
+            ? '<span class="tag mute">待完成</span>'
+            : '<span class="tag mute">' + esc(t.status || '状态未知') + '</span>')
+        : t.claimed ? '<span class="tag ok">已领取</span>'
         : t.claimable ? '<span class="tag warn">可领取</span>'
         : t.locked ? '<span class="tag mute">未解锁</span>'
         : t.accept_status === 'accepted' ? '<span class="tag mute">进行中</span>'
         : '<span class="tag mute">未接受</span>';
       const isAuto = AUTO_TASKS[t.task_code] || (t.task_code && t.task_code.startsWith('expert_use_')) || (t.jump_url && /expertId(?:=|%3D)ex_/.test(t.jump_url));
       const autoTip = AUTO_TASKS[t.task_code] || '一键体验专家并领取奖励';
-      const acted = t.claimed || t.locked ? ''
+      const acted = taskGlobal || t.claimed || t.locked ? ''
         : t.claimable ? '<button class="xs primary" data-t="claim" data-c="' + esc(t.task_code) + '">领取</button>'
         : isAuto ? '<button class="xs primary" data-t="auto" data-c="' + esc(t.task_code) + '" title="' + esc(autoTip) + '">一键完成</button>'
         : t.accept_status === 'accepted' ? ''

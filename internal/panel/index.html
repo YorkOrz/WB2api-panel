@@ -711,6 +711,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <button class="xs" id="btnCheckinAll">全部签到</button>
           <button class="xs" id="btnTravelAll">旅行巡检</button>
           <button class="xs" id="btnActivityAll">活跃上报</button>
+          <button class="xs" id="btnGlobalActivityAll">国际活跃</button>
           <button class="xs" id="btnKeepaliveAll">全部保活</button>
         </header>
         <div class="tbl-wrap">
@@ -981,11 +982,21 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                   <span class="hint">一趟派出 + 一趟领奖闭环</span></label>
               </div>
               <div>
-                <div class="switch"><span class="lb">活跃上报</span>
+                <div class="switch"><span class="lb">国内版活跃上报</span>
                   <input type="checkbox" name="activity_enabled"></div>
                 <label class="fld"><span class="lb">上报时点（小时，逗号分隔）</span>
                   <input name="activity_hours" placeholder="10">
                   <span class="hint">点亮连登 + 解锁领养前置</span></label>
+              </div>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div>
+                <div class="switch"><span class="lb">国际版每日活跃</span>
+                  <input type="checkbox" name="global_activity_enabled"></div>
+                <label class="fld"><span class="lb">补跑时点（小时，逗号分隔）</span>
+                  <input name="global_activity_hours" placeholder="8, 12, 16, 20">
+                  <span class="hint">先查热力图；当天未点亮才上报一次</span></label>
               </div>
             </div>
             <div class="hr"></div>
@@ -1250,7 +1261,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   <div class="dlg" style="width:940px">
     <header>
       <h3>积分任务 <span class="hint" id="taskWho"></span></h3>
-      <div class="hint">查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用。所有操作走网关，无需外部脚本。</div>
+      <div class="hint" id="taskHint">查询上游任务进度；「接受」为报名（幂等），「领取」在进度达标后可用。所有操作走网关，无需外部脚本。</div>
     </header>
     <div class="body">
       <div class="state" id="taskState"><span class="dots">加载中</span></div>

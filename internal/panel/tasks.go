@@ -38,21 +38,25 @@ func (p *Panel) accountTasks(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "list tasks: "+err.Error())
 		return
 	}
+	realm := a.Realm()
 	// 合并小程序口径任务（school_season / Sequential_Tasks_1 等仅在 mp 头列表下发）。
 	// mp 列表是默认口径的超集（实测含常规任务），按 task_code 去重；失败静默。
-	if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
-		seen := map[string]bool{}
-		for _, t := range tasks {
-			seen[t.TaskCode] = true
-		}
-		for _, t := range mpTasks {
-			if !seen[t.TaskCode] {
-				tasks = append(tasks, t)
+	// Global 里程碑任务不适用 CN 小程序的 accept/claim 协议，不做第二次请求。
+	if !a.IsGlobal() {
+		if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
+			seen := map[string]bool{}
+			for _, t := range tasks {
 				seen[t.TaskCode] = true
+			}
+			for _, t := range mpTasks {
+				if !seen[t.TaskCode] {
+					tasks = append(tasks, t)
+					seen[t.TaskCode] = true
+				}
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tasks": tasks})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "realm": realm, "tasks": tasks})
 }
 
 // accountTaskAccept 接受任务（报名；幂等）。
@@ -60,6 +64,10 @@ func (p *Panel) accountTaskAccept(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	if a.IsGlobal() {
+		writeErr(w, http.StatusConflict, "Global milestone tasks do not expose a verified accept API")
 		return
 	}
 	var body struct {
@@ -87,6 +95,10 @@ func (p *Panel) taskAcceptAll(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	if a.IsGlobal() {
+		writeErr(w, http.StatusConflict, "Global milestone tasks do not expose a verified accept API")
 		return
 	}
 	tasks, err := p.cfg.Upstream.ListTasks(a)
@@ -154,6 +166,10 @@ func (p *Panel) accountTaskClaim(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	a := p.accountByUID(w, uid)
 	if a == nil {
+		return
+	}
+	if a.IsGlobal() {
+		writeErr(w, http.StatusConflict, "Global milestone rewards have not been verified")
 		return
 	}
 	var body struct {
