@@ -327,7 +327,7 @@ func TestLogChatRowExtendedFields(t *testing.T) {
 	withChatLog(t)
 	out := captureStdout(t, func() {
 		logChatRowEx(10*time.Millisecond, 2*time.Second, "glm-5.3", "stream", "u123456789", "示例号",
-			http.StatusOK, 42, "req-abc123", reqlog.OutcomeSuccess, 2, 1.25, true, "", "")
+			http.StatusOK, 42, "req-abc123", reqlog.OutcomeSuccess, 2, 1.25, true, "", "", "")
 	})
 	for _, want := range []string{"rid=req-abc123", "out=success", "try=2", "credit=1.2500"} {
 		if !strings.Contains(out, want) {
@@ -346,7 +346,7 @@ func TestLogChatRowSourceFields(t *testing.T) {
 	out := captureStdout(t, func() {
 		logChatRowEx(10*time.Millisecond, 2*time.Second, "glm-5.3", "stream", "u123456789", "示例号",
 			http.StatusOK, 42, "req-abc123", reqlog.OutcomeSuccess, 1, 0, false,
-			"203.0.113.7", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+			"203.0.113.7", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "")
 	})
 	for _, want := range []string{`src=203.0.113.7`, `ua="Chrome/120.0.0.0"`} {
 		if !strings.Contains(out, want) {
@@ -367,6 +367,71 @@ func TestLogChatRowSourcePartial(t *testing.T) {
 	})
 	if strings.Contains(out, "src=") {
 		t.Errorf("logChatRow has no source, want no src field:\n%s", out)
+	}
+}
+
+// 推理档位落进流水行：有档位时追加 eff=，无档位（非推理模型 / 老客户端）时不追加，
+// 保证旧行格式可被既有日志解析脚本继续消费。
+func TestLogChatRowEffortField(t *testing.T) {
+	withChatLog(t)
+	with := captureStdout(t, func() {
+		logChatRowEx(0, time.Second, "m", "sync", "u", "", 200, 1,
+			"req-1", reqlog.OutcomeSuccess, 1, 0, false, "", "", "high")
+	})
+	if !strings.Contains(with, "eff=high") {
+		t.Errorf("effort row missing eff=high:\n%s", with)
+	}
+	without := captureStdout(t, func() {
+		logChatRowEx(0, time.Second, "m", "sync", "u", "", 200, 1,
+			"req-1", reqlog.OutcomeSuccess, 1, 0, false, "", "", "")
+	})
+	if strings.Contains(without, "eff=") {
+		t.Errorf("empty effort must not add eff field:\n%s", without)
+	}
+}
+
+// effortLabel 的展示口径：生效值优先；降级显示 请求→生效；显式关闭思考显示 off；
+// 完全无档位信息时为空串（调用方据此跳过该维度）。
+func TestChatStatEffortLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		stat chatStat
+		want string
+	}{
+		{"none", chatStat{}, ""},
+		{"requested only", chatStat{effortReq: "high"}, "high"},
+		{"effective only", chatStat{effort: "medium"}, "medium"},
+		{"same", chatStat{effortReq: "high", effort: "high"}, "high"},
+		{"downgraded", chatStat{effortReq: "max", effort: "medium"}, "max→medium"},
+		{"off", chatStat{effortOff: true}, "off"},
+		// 关闭思考时上游会删档位：请求值不再成立，只报 off。
+		{"off wins", chatStat{effortReq: "high", effortOff: true}, "off"},
+	}
+	for _, c := range cases {
+		if got := c.stat.effortLabel(); got != c.want {
+			t.Errorf("%s: effortLabel()=%q want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// newChatStat 从客户端 body 取请求档位；出站回填后 event() 同时带出生效值与降级标记。
+func TestChatStatReasoningEvent(t *testing.T) {
+	st := newChatStat(time.Now(), []byte(`{"model":"glm-5.3","stream":true,"reasoning_effort":"max"}`), true)
+	if st.effortReq != "max" {
+		t.Fatalf("effortReq=%q want max", st.effortReq)
+	}
+	// 模拟出站降级回填。
+	st.effort = "high"
+	tr := &requestTrace{start: time.Now(), path: "/v1/chat/completions", stat: st}
+	e := tr.event(http.StatusOK)
+	if e.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort=%q want high (实际生效值)", e.ReasoningEffort)
+	}
+	if e.ReasoningRequested != "max" {
+		t.Errorf("ReasoningRequested=%q want max (降级时保留客户端原值)", e.ReasoningRequested)
+	}
+	if e.ReasoningOff {
+		t.Errorf("ReasoningOff=true want false")
 	}
 }
 

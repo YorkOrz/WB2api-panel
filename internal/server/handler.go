@@ -786,6 +786,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		convID = sessKey
 	}
 	chatMeta := upstream.ChatMeta{ConversationID: convID}
+	// 出站推理档位回填（仅日志）：Upstream 在 prepareBody 之后写入真正发往上游的
+	// 档位；与 st.effortReq（客户端请求值）对比即可看出本次是否被降级。
+	var outReasoning upstream.ReasoningState
+	chatMeta.ReasoningOut = &outReasoning
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
 		chatMeta.ConversationRequestID = v
 	} else if turnKey != "" && sessKey != "" {
@@ -895,6 +899,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 客户端 IP 按请求传递（PassthroughIP 开启时注入；消除共享字段竞态）。
 		attemptStarted := time.Now()
 		rc, status, respBody, terr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
+		// 出站档位已由 upstream 回填（prepareBody 之后的真实值）：直接落到统计对象，
+		// 换号重试以最后一次尝试为准。日志观测不影响本请求的任何出站行为。
+		st.effort = outReasoning.Effort
+		if outReasoning.Off {
+			st.effortOff = true
+		}
 		// 分类信封一次成型：upstream 已在错误路径返回 *upstream.Error（Kind +
 		// Retry-After 头解析）。传输层错误（非 *Error）走抖动换号分支；防御分支
 		// （terr 为 nil 但 status>=400，如 ErrNone 兜底）回落本地 Classify，双保险。

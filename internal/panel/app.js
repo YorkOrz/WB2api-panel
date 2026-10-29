@@ -962,13 +962,14 @@ async function loadCreditHistory() {
   renderCreditHistory(d);
 }
 
-/* reqMatch 请求记录筛选：q 对 IP/UA/模型/账号/请求 ID 做空格分词的 AND 包含匹配，
+/* reqMatch 请求记录筛选：q 对 IP/UA/模型/思考档位/账号/请求 ID 做空格分词的 AND 包含匹配，
    outcome 精确匹配。两者都在已拉取的条目上做（最多 1000 条），不发新请求。 */
 function reqMatch(e, f) {
   f = f || reqFilter;
   if (f.outcome && String(e && e.outcome || '') !== f.outcome) return false;
   if (f.q) {
-    const text = [e && e.client_ip, e && e.user_agent, e && e.model, e && e.account, e && e.request_id]
+    const text = [e && e.client_ip, e && e.user_agent, e && e.model, e && e.account, e && e.request_id,
+      reasoningText(e), e && e.reasoning_requested]
       .filter(Boolean).join(' ').toLowerCase();
     for (const kw of f.q.toLowerCase().split(/\s+/).filter(Boolean)) {
       if (!text.includes(kw)) return false;
@@ -1013,6 +1014,7 @@ function renderRequestTable() {
       '<td class="num">' + esc(when) + '</td>' +
       '<td>' + reqOutcomeTag(e) + '</td>' +
       '<td>' + esc(e && e.model || '—') + '</td>' +
+      '<td>' + reqReasoningCell(e) + '</td>' +
       '<td>' + esc(e && e.account || '—') + '</td>' +
       '<td>' + (ip ? '<span class="clip ip" title="' + esc(ip) + '">' + esc(ip) + '</span>' : '<span class="muted">—</span>') + '</td>' +
       '<td>' + (ua ? '<span class="clip" title="' + esc(ua) + '">' + esc(ua) + '</span>' : '<span class="muted">—</span>') + '</td>' +
@@ -1021,7 +1023,7 @@ function renderRequestTable() {
       '<td class="num">' + reqCreditCell(e) + '</td>' +
       '<td>' + (rid ? '<span class="clip rid" title="' + esc(rid) + '">' + esc(rid) + '</span>' : '<span class="muted">—</span>') + '</td>' +
       '</tr>';
-  }).join('') || '<tr><td colspan="10" class="empty">' +
+  }).join('') || '<tr><td colspan="11" class="empty">' +
       (reqEntries.length ? '没有符合当前筛选条件的请求记录' : '暂无请求记录') + '</td></tr>';
 
   const filtered = list.length !== reqEntries.length;
@@ -1068,6 +1070,7 @@ function requestLogText(e) {
     when,
     String(e && e.status || '—') + ' ' + (outcomeLabel[e && e.outcome] || (e && e.outcome) || '—'),
     e && e.model || '—',
+    reasoningText(e),
     e && e.account || '—',
     e && e.client_ip || '—',
     e && e.user_agent || '—',
@@ -1077,6 +1080,34 @@ function requestLogText(e) {
     cacheRateText(e && e.cache_hit_tokens, e && e.cache_miss_tokens) === '—' ? '' : '命中 ' + cacheRateText(e && e.cache_hit_tokens, e && e.cache_miss_tokens),
     e && e.request_id || '—',
   ].filter(Boolean).join(' | ');
+}
+
+/* reasoningText 把一条请求的「思考档位」渲染成单行标签：
+   - 无档位信息（非推理模型 / 客户端未带 effort）→ 空串，调用方以 — 兜底；
+   - 正常生效 → 生效档位（high / max …）；
+   - 被降级 → 请求档→生效档（如 high→medium），这是最需要被看见的信息；
+   - 显式关闭思考 → off。
+   字段口径见 reqlog.Event.ReasoningEffort / ReasoningRequested / ReasoningOff。
+   位置要求：必须落在 requestLogText 与 fmtBytes 之间——前端纯函数切片测试只截取
+   这一段（frontend_test.go TestAppJSRequestLogFormatting），挪出去会让测试 VM
+   拿不到 reasoningText。 */
+function reasoningText(e) {
+  if (e && e.reasoning_off) return 'off';
+  const eff = e && e.reasoning_effort ? String(e.reasoning_effort) : '';
+  const req = e && e.reasoning_requested ? String(e.reasoning_requested) : '';
+  if (req && eff && req !== eff) return req + '→' + eff;
+  if (eff) return eff;
+  return '';
+}
+
+/* reqReasoningCell 思考列单元格：档位用等宽小徽章，降级用警示色以便一眼筛出
+   "客户端要的档位没生效"的请求。 */
+function reqReasoningCell(e) {
+  const text = reasoningText(e);
+  if (!text) return '<span class="muted">—</span>';
+  const downgraded = text.indexOf('→') >= 0;
+  const cls = text === 'off' ? 'mute' : (downgraded ? 'warn' : 'ok');
+  return '<span class="tag ' + cls + ' eff">' + esc(text) + '</span>';
 }
 
 /* 缓存命中率纯文本（issue #92）：requestLogText 与积分表/kpi 卡共用。

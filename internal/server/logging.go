@@ -71,6 +71,15 @@ type chatStat struct {
 	clientIP  string
 	userAgent string
 
+	// 推理档位观测（见 upstream.ReadReasoningState）：
+	//   effortReq 客户端原始 body 里请求的档位（构造时即定）
+	//   effort    实际发往上游的档位（出站后由 ChatMeta.ReasoningOut 回填，可被降级改写）
+	//   effortOff 客户端显式关闭思考（thinking.type=disabled）
+	// 三者皆零值时展示层不显示该维度（非推理模型 / 老客户端不带档位）。
+	effortReq string
+	effort    string
+	effortOff bool
+
 	logged bool
 }
 
@@ -80,7 +89,12 @@ func newChatStat(now time.Time, body []byte, stream bool) *chatStat {
 	if stream {
 		mode = "stream"
 	}
-	return &chatStat{start: now, model: parseModelFromBody(body), mode: mode, toks: -1}
+	st := &chatStat{start: now, model: parseModelFromBody(body), mode: mode, toks: -1}
+	// 客户端请求的档位先落一份：出站回填只覆盖 effort（effective），
+	// 保留 effortReq 才能看出「被降级」。
+	req := upstream.ReadReasoningState(body)
+	st.effortReq, st.effortOff = req.Effort, req.Off
+	return st
 }
 
 // done 幂等落一行表格日志。
@@ -90,7 +104,29 @@ func (s *chatStat) done() {
 	}
 	s.logged = true
 	logChatRowEx(s.ttfb, time.Since(s.start), s.model, s.mode, s.uid, s.nick, s.status, s.toks,
-		s.requestID, s.outcome, s.attempts, s.credit, s.hasCredit, s.clientIP, s.userAgent)
+		s.requestID, s.outcome, s.attempts, s.credit, s.hasCredit, s.clientIP, s.userAgent,
+		s.effortLabel())
+}
+
+// effortLabel 表格日志用的档位标签：空串 = 本次请求无档位信息（非推理模型或
+// 客户端未声明），此时流水行不追加 eff 字段，格式与旧版逐字一致。
+// 降级显示 `请求→生效`，关闭思考显示 `off`（关闭态优先——此时上游已删掉档位，
+// 再报请求值会与真实出站矛盾）。
+func (s *chatStat) effortLabel() string {
+	if s.effortOff {
+		return "off"
+	}
+	eff := s.effort
+	if eff == "" {
+		eff = s.effortReq
+	}
+	if eff == "" {
+		return ""
+	}
+	if s.effortReq != "" && s.effort != "" && s.effortReq != s.effort {
+		return s.effortReq + "→" + s.effort
+	}
+	return eff
 }
 
 // chatStatsReader 在流式透传时抓取 SSE 末帧的 usage.completion_tokens 精确值，
@@ -477,6 +513,16 @@ func (t *requestTrace) event(status int) reqlog.Event {
 		e.HasCredit = s.hasCredit
 		e.CacheHitTokens = s.cacheHit
 		e.CacheMissTokens = s.cacheMiss
+		// 推理档位：effort 为实际生效值；客户端的原始请求值只在降级或关闭思考时
+		// 单独写出（否则两列重复，归档体积白涨）。
+		e.ReasoningEffort = s.effort
+		if e.ReasoningEffort == "" {
+			e.ReasoningEffort = s.effortReq
+		}
+		if s.effortReq != "" && s.effort != "" && s.effortReq != s.effort {
+			e.ReasoningRequested = s.effortReq
+		}
+		e.ReasoningOff = s.effortOff
 	}
 	e.ClientIP = t.clientIP
 	e.UserAgent = t.userAgent
@@ -542,14 +588,15 @@ const (
 //     uid8 时人眼无法判断是哪个号，要辨认必须再查 auths/，排障多一跳；
 //   - toks<0 表示 usage 缺失，显示 "-"。
 func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int) {
-	logChatRowEx(ttfb, total, model, mode, uid, nick, status, toks, "", "", 0, 0, false, "", "")
+	logChatRowEx(ttfb, total, model, mode, uid, nick, status, toks, "", "", 0, 0, false, "", "", "")
 }
 
-// logChatRowEx 是带请求 ID、结果、重试、积分与调用来源字段的扩展流水行。旧调用保持
-// 原格式；requestID 非空时才追加扩展字段；来源两参均为空时不追加来源段。
+// logChatRowEx 是带请求 ID、结果、重试、积分、调用来源与推理档位字段的扩展流水行。
+// 旧调用保持原格式；requestID 非空时才追加扩展字段；来源两参均为空时不追加来源段；
+// effort 为空时不追加 eff 段（非推理模型 / 客户端未声明档位）。
 func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int,
 	requestID, outcome string, attempts int, credit float64, hasCredit bool,
-	clientIP, userAgent string) {
+	clientIP, userAgent, effort string) {
 	if !chatLogEnabled {
 		return
 	}
@@ -599,7 +646,13 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 		}
 		src = fmt.Sprintf(" src=%s ua=%s |", dashIfEmpty(clientIP), ua)
 	}
-	fmt.Fprintf(chatLogOut, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | %s | total=%.1fs |%s%s\n",
+	// 推理档位：紧贴 total 之后（同属请求形态），无档位信息时不追加，
+	// 保证非推理模型与旧客户端产生的流水行与旧版逐字一致。
+	eff := ""
+	if effort != "" {
+		eff = fmt.Sprintf(" eff=%s |", effort)
+	}
+	fmt.Fprintf(chatLogOut, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | %s | total=%.1fs |%s%s%s\n",
 		seq,
 		time.Now().Format("15:04:05"),
 		model,
@@ -610,6 +663,7 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 		logfmt.Pad(tokField, chatTokWidth),
 		logfmt.Pad(tokpsField, chatRateWidth),
 		total.Seconds(),
+		eff,
 		extra,
 		src,
 	)

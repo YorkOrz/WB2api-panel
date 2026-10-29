@@ -297,7 +297,8 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
-// 请求记录筛选：IP / UA / 模型 / 账号 / 请求 ID 的包含匹配（空格分词 AND）+ 结果精确匹配。
+// 请求记录筛选：IP / UA / 模型 / 思考档位 / 账号 / 请求 ID 的包含匹配（空格分词 AND）
+// + 结果精确匹配。
 func TestAppJSRequestMatch(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -309,11 +310,17 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 const start = src.indexOf('function reqMatch');
 const end = src.indexOf('function reqOutcomeTag');
 if (start < 0 || end < 0) throw new Error('reqMatch not found');
+// reasoningText 在本段之外（放在 requestLogText 窗口内以适配纯函数切片测试），
+// 单独切一段拼进来。
+const rtStart = src.indexOf('function reasoningText');
+const rtEnd = src.indexOf('function reqReasoningCell');
+if (rtStart < 0 || rtEnd < 0) throw new Error('reasoningText not found');
 const ctx = {};
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.reqMatch=reqMatch;', ctx);
-const base = { outcome: 'success', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0', model: 'cn:glm-5.3', account: '示例(uid8)', request_id: 'req-1' };
-const other = { outcome: 'http_error', client_ip: '198.51.100.4', user_agent: 'Mozilla/5.0 Chrome/120', model: 'global:hy3', account: '甲(uid9)', request_id: 'req-2' };
+vm.runInContext(src.slice(rtStart, rtEnd) + src.slice(start, end) +
+  '\nthis.reqMatch=reqMatch;', ctx);
+const base = { outcome: 'success', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0', model: 'cn:glm-5.3', account: '示例(uid8)', request_id: 'req-1', reasoning_effort: 'high' };
+const other = { outcome: 'http_error', client_ip: '198.51.100.4', user_agent: 'Mozilla/5.0 Chrome/120', model: 'global:hy3', account: '甲(uid9)', request_id: 'req-2', reasoning_effort: 'medium', reasoning_requested: 'max' };
 const rows = [base, other];
 const pick = f => rows.filter(e => ctx.reqMatch(e, f)).map(e => e.request_id);
 process.stdout.write(JSON.stringify({
@@ -325,6 +332,8 @@ process.stdout.write(JSON.stringify({
   multiMiss: pick({ q: 'glm chrome', outcome: '' }),
   byOutcome: pick({ q: '', outcome: 'http_error' }),
   combined: pick({ q: '198.51', outcome: 'http_error' }),
+  byEffort: pick({ q: 'medium', outcome: '' }),
+  byEffortDowngraded: pick({ q: 'max', outcome: '' }),
 }));`
 	f, err := os.CreateTemp(t.TempDir(), "request-filter-*.cjs")
 	if err != nil {
@@ -339,7 +348,8 @@ process.stdout.write(JSON.stringify({
 		t.Fatalf("request filter node test failed: %v\n%s", err, out)
 	}
 	// q 对 outcome 不参与匹配（outcome 有独立下拉），multiKw 里的 success 命中不了任何字段。
-	const want = `{"all":["req-1","req-2"],"byIP":["req-1"],"byUA":["req-2"],"byModel":["req-1"],"multiKw":[],"multiMiss":[],"byOutcome":["req-2"],"combined":["req-2"]}`
+	// byEffort / byEffortDowngraded：思考档位（生效值与被降级的原始请求值）都参与搜索。
+	const want = `{"all":["req-1","req-2"],"byIP":["req-1"],"byUA":["req-2"],"byModel":["req-1"],"multiKw":[],"multiMiss":[],"byOutcome":["req-2"],"combined":["req-2"],"byEffort":["req-2"],"byEffortDowngraded":["req-2"]}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Fatalf("request filter=%s want %s", out, want)
 	}

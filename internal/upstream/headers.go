@@ -188,6 +188,12 @@ type ChatMeta struct {
 	ConversationID        string // X-Conversation-ID：body 提取的入站值，空则不发（透传优先，不伪造）
 	ConversationRequestID string // X-Conversation-Request-ID / X-Root-Request-ID：聚合主键，必发
 	TraceID               string // X-Trace-ID：入站透传值，空则回落 conversationRequestID
+
+	// ReasoningOut 出站推理档位回填（可选，仅日志观测用，不参与任何请求改写）。
+	// 非 nil 时 ChatStream* 在 prepareBody 之后把**真正发往上游**的档位写入此处，
+	// 供 server 侧区分「客户端请求的档位」与「降级/补档后实际生效的档位」。
+	// 换号重试以最后一次尝试为准（同一次调用内档位只取决于 body 与模型）。
+	ReasoningOut *ReasoningState
 }
 
 // ChatHeaders 在 common 之上加 chat 专属的账号头。

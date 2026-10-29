@@ -82,8 +82,15 @@ type Event struct {
 	// 上游未回该维度时两者皆零值省略；hit=0 + miss>0 即整段未命中。
 	CacheHitTokens  int64 `json:"cache_hit_tokens,omitempty"`
 	CacheMissTokens int64 `json:"cache_miss_tokens,omitempty"`
-	ClientIP         string    `json:"client_ip,omitempty"`
-	UserAgent        string    `json:"user_agent,omitempty"`
+	// ReasoningEffort 本次**实际发往上游**的推理档位（low/medium/high/xhigh/max，
+	// 降级后取值）。ReasoningRequested 是客户端原始请求的档位，只在二者不同
+	// （发生降级）或思考被显式关闭时填写，供面板显示 `high→medium` / `high→off`。
+	// 上游未声明档位且未开启 thinking 时两者皆空（省略）。
+	ReasoningEffort    string `json:"reasoning_effort,omitempty"`
+	ReasoningRequested string `json:"reasoning_requested,omitempty"`
+	ReasoningOff       bool   `json:"reasoning_off,omitempty"`
+	ClientIP           string `json:"client_ip,omitempty"`
+	UserAgent          string `json:"user_agent,omitempty"`
 }
 
 // Filter 用于从归档中筛选最近记录。字符串字段一律「包含」匹配（大小写不敏感），

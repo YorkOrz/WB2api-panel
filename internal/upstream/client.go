@@ -1216,6 +1216,12 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	if c.globalOn(a) {
 		prepared = ensureConsoleSystem(prepared)
 	}
+	// 出站档位回填（仅日志观测）：取 prepareBody 产物，即降级/补默认档之后真正发往
+	// 上游的值。放在 ensureConsoleSystem 之后——虽然它只动 messages，但按「最终出站
+	// body 才可信」取更稳，避免将来该函数开始改写顶层字段时观测值失真。
+	if meta.ReasoningOut != nil {
+		*meta.ReasoningOut = ReadReasoningState(prepared)
+	}
 	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody），
 	// 循环本身各分支必 return——无循环尾兜底代码（此前外层 var cancel 从未赋值 +
 	// 尾部不可达 cancel() 是潜伏 nil-panic，已删；chatPaths 恒非空由构造保证）。
