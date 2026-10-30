@@ -197,39 +197,42 @@ func TestAppJSAccountStatusDefersModelLocks(t *testing.T) {
 	}
 }
 
-// 请求记录行必须紧凑、可读，并带上调用来源（IP / UA）；来源缺失时以 — 兜底。
-func TestAppJSRequestLogFormatting(t *testing.T) {
+// 请求记录行不再挂整行 tooltip：思考档位、入/出拆分、缓存命中、首字都已进列，
+// 整行 title 只是把同样的信息再念一遍还遮挡相邻行。被截断的 IP / UA / 请求 ID
+// 仍各自带 title，所以这里只断言 <tr> 标签本身没有 title。
+func TestAppJSRequestRowHasNoTooltip(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not installed; request log formatting test skipped")
+		t.Skip("node not installed; request row test skipped")
 	}
 	script := `const fs = require('fs');
 const vm = require('vm');
 const src = fs.readFileSync(process.argv[2], 'utf8');
-const escStart = src.indexOf('function esc(');
-const escEnd = src.indexOf('function ago(');
-const fmtStart = src.indexOf('function fmtTok(');
-const fmtEnd = src.indexOf('function usStat(');
-const reqStart = src.indexOf('function requestLogText');
-const reqEnd = src.indexOf('function fmtBytes');
-if ([escStart, escEnd, fmtStart, fmtEnd, reqStart, reqEnd].some(v => v < 0)) throw new Error('request log helpers not found');
+const start = src.indexOf('function renderRequestTable');
+const end = src.indexOf('let reqQTimer');
+if (start < 0 || end < 0 || end <= start) throw new Error('renderRequestTable not found');
 const ctx = { Date, Number, String, Math, RegExp, isNaN };
 vm.createContext(ctx);
-vm.runInContext(
-  src.slice(escStart, escEnd) + src.slice(fmtStart, fmtEnd) + src.slice(reqStart, reqEnd) +
-  '\nthis.requestLogText=requestLogText;',
-  ctx
-);
-const time = new Date(2026, 8, 28, 14, 5, 6).toISOString();
-const good = { time, status: 200, outcome: 'success', model: 'glm-5.3', account: '账号(uid8)', duration_ms: 1250, total_tokens: 2300, credit_known: true, credit: 0.12, request_id: 'req-1', client_ip: '203.0.113.7', user_agent: 'python-requests/2.31.0' };
-const noSource = { ...good, request_id: 'req-3', client_ip: '', user_agent: '' };
-const cached = { ...good, request_id: 'req-2', cache_hit_tokens: 2257, cache_miss_tokens: 43 };
-process.stdout.write(JSON.stringify({
-  good: ctx.requestLogText(good),
-  noSource: ctx.requestLogText(noSource),
-  cached: ctx.requestLogText(cached),
-}));`
-	f, err := os.CreateTemp(t.TempDir(), "request-log-format-*.cjs")
+vm.runInContext(src.slice(start, end) + '\nthis.renderRequestTable=renderRequestTable;', ctx);
+const tbody = { innerHTML: '' };
+ctx.$ = id => id === 'reqBody' ? tbody : { textContent: '', className: '' };
+ctx.reqEntries = [{
+  time: new Date(2026, 9, 30, 16, 20, 11).toISOString(), status: 200, outcome: 'success',
+  model: 'cn:glm-5.3', account: '账号(uid8)', client_ip: '10.0.0.1', user_agent: 'curl/8.14.1',
+  duration_ms: 1200, ttfb_ms: 800, prompt_tokens: 10, completion_tokens: 5,
+  cache_hit_tokens: 8, cache_miss_tokens: 2, credit_known: true, credit: 0.01, request_id: 'req-1'
+}];
+ctx.reqFilter = {};
+ctx.reqMatch = () => true;
+ctx.esc = v => String(v == null ? '' : v);
+ctx.reqOutcomeTag = () => '<span class="tag ok">200 成功</span>';
+ctx.reqReasoningCell = () => '<span class="tag ok eff">high</span>';
+ctx.reqDurationCell = () => '<div class="m1">1.20s</div><div class="m2 dim">首字: 800ms</div>';
+ctx.reqTokenCell = () => '<div class="m1">入: 10 <span class="sep">|</span> 出: 5</div>';
+ctx.reqCreditCell = () => '0.01';
+ctx.renderRequestTable();
+process.stdout.write(tbody.innerHTML);`
+	f, err := os.CreateTemp(t.TempDir(), "request-row-*.cjs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,14 +242,20 @@ process.stdout.write(JSON.stringify({
 	f.Close()
 	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
 	if err != nil {
-		t.Fatalf("request log formatting node test failed: %v\n%s", err, out)
+		t.Fatalf("request row node test failed: %v\n%s", err, out)
 	}
-	text := "14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | 203.0.113.7 | python-requests/2.31.0 | 1.25s | 2.3k tok | 0.12 credit | req-1"
-	noSource := "14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | — | — | 1.25s | 2.3k tok | 0.12 credit | req-3"
-	cached := "14:05:06 | 200 成功 | glm-5.3 | 账号(uid8) | 203.0.113.7 | python-requests/2.31.0 | 1.25s | 2.3k tok | 0.12 credit | 命中 98.1% | req-2"
-	want := `{"good":` + strconv.Quote(text) + `,"noSource":` + strconv.Quote(noSource) + `,"cached":` + strconv.Quote(cached) + `}`
-	if strings.TrimSpace(string(out)) != want {
-		t.Fatalf("request log formatting=%s want %s", out, want)
+	html := string(out)
+	if !strings.Contains(html, "<tr>") {
+		t.Fatalf("row must be a bare <tr>, got:\n%s", html)
+	}
+	if strings.Contains(html, "<tr title=") {
+		t.Fatalf("row must not carry a title tooltip, got:\n%s", html)
+	}
+	// 两列仍要落位（两行堆叠的容器来自 cell2 单元格）。
+	for _, want := range []string{`<td class="cell2">`, `<td class="model">`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("row missing %s:\n%s", want, html)
+		}
 	}
 }
 
@@ -352,6 +361,74 @@ process.stdout.write(JSON.stringify({
 	const want = `{"all":["req-1","req-2"],"byIP":["req-1"],"byUA":["req-2"],"byModel":["req-1"],"multiKw":[],"multiMiss":[],"byOutcome":["req-2"],"combined":["req-2"],"byEffort":["req-2"],"byEffortDowngraded":["req-2"]}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Fatalf("request filter=%s want %s", out, want)
+	}
+}
+
+// 请求记录的 Token / 耗时列：两行堆叠（主值 + 明细），缓存命中率按档配色。
+// 锁定输出，避免 fmtTok/fmtMs 的改动悄悄把这两列退化成单行或丢掉明细。
+func TestAppJSRequestCells(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; request cell test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const cut = (a, b) => {
+  const i = src.indexOf(a), j = src.indexOf(b);
+  if (i < 0 || j < 0 || j <= i) throw new Error('slice not found: ' + a);
+  return src.slice(i, j);
+};
+const ctx = { Date, Number, String, Math, RegExp, isNaN, parseFloat, isFinite };
+vm.createContext(ctx);
+vm.runInContext(
+  cut('function esc(', 'function ago(') +
+  cut('function fmtTok(', 'function usStat(') +
+  cut('function cacheRateText', 'function fmtBytes') +
+  cut('function reqTokenCell', 'function reqCreditCell') +
+  '\nthis.reqTokenCell=reqTokenCell;this.reqDurationCell=reqDurationCell;',
+  ctx
+);
+const hot = { prompt_tokens: 144056, completion_tokens: 4509, total_tokens: 148565,
+  cache_hit_tokens: 142080, cache_miss_tokens: 1976, duration_ms: 35147, ttfb_ms: 21315 };
+const cold = { prompt_tokens: 273399, completion_tokens: 661, total_tokens: 274060,
+  cache_hit_tokens: 9856, cache_miss_tokens: 263543, duration_ms: 13386, ttfb_ms: 10601 };
+const warm = { prompt_tokens: 1000, completion_tokens: 50,
+  cache_hit_tokens: 620, cache_miss_tokens: 380, duration_ms: 1200, ttfb_ms: 800 };
+process.stdout.write(JSON.stringify({
+  hotTok: ctx.reqTokenCell(hot),
+  hotDur: ctx.reqDurationCell(hot),
+  coldTok: ctx.reqTokenCell(cold),
+  warmTok: ctx.reqTokenCell(warm),
+  noUsage: ctx.reqTokenCell({ duration_ms: 6449 }),
+  noTtfb: ctx.reqDurationCell({ duration_ms: 1800 }),
+  noCache: ctx.reqTokenCell({ prompt_tokens: 226, completion_tokens: 38, duration_ms: 500 }),
+}));`
+	f, err := os.CreateTemp(t.TempDir(), "request-cells-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("request cell node test failed: %v\n%s", err, out)
+	}
+	// 命中 ≥80% 绿(ok)、≥40% 琥珀(warn)、其余灰(dim)；无 usage 退化成 —；
+	// 非流式（无 ttfb）不留「首字」行；上游未报缓存时不显示缓存行。
+	want := `{` +
+		`"hotTok":"<div class=\"m1\">入: 144.1k <span class=\"sep\">|</span> 出: 4.5k</div><div class=\"m2 ok\">⚡ 缓: 142.1k (98.6%)</div>",` +
+		`"hotDur":"<div class=\"m1\">35.15s</div><div class=\"m2 dim\">首字: 21.32s</div>",` +
+		`"coldTok":"<div class=\"m1\">入: 273.4k <span class=\"sep\">|</span> 出: 661</div><div class=\"m2 dim\">⚡ 缓: 9.9k (3.6%)</div>",` +
+		`"warmTok":"<div class=\"m1\">入: 1k <span class=\"sep\">|</span> 出: 50</div><div class=\"m2 warn\">⚡ 缓: 620 (62%)</div>",` +
+		`"noUsage":"<span class=\"muted\">—</span>",` +
+		`"noTtfb":"<div class=\"m1\">1.80s</div>",` +
+		`"noCache":"<div class=\"m1\">入: 226 <span class=\"sep\">|</span> 出: 38</div>"` +
+		`}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("request cells=%s\nwant %s", out, want)
 	}
 }
 
@@ -1501,4 +1578,3 @@ process.stdout.write(JSON.stringify({
 			strings.TrimSpace(string(out)), want)
 	}
 }
-

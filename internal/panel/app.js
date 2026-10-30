@@ -987,10 +987,40 @@ function reqOutcomeTag(e) {
   return '<span class="tag ' + cls + '">' + esc(String(e && e.status || '—') + ' ' + label) + '</span>';
 }
 
+/* reqTokenCell Token 列：两行堆叠——上行「入 / 出」拆分，下行缓存命中。
+   单列竖排比原来一行 total 更能看出「贵在哪」：入大出小是长上下文，缓存命中高
+   说明前缀复用生效，命中低则是每次重算前缀（成本信号）。
+   上游没回 usage 时两行都缺，退化成 —，与旧行为一致。 */
 function reqTokenCell(e) {
-  const total = Number(e && e.total_tokens || 0) ||
-    (Number(e && e.prompt_tokens || 0) + Number(e && e.completion_tokens || 0));
-  return total ? fmtTok(total) : '—';
+  const inTok = Number(e && e.prompt_tokens || 0);
+  const outTok = Number(e && e.completion_tokens || 0);
+  const hit = Number(e && e.cache_hit_tokens || 0);
+  const miss = Number(e && e.cache_miss_tokens || 0);
+  const total = Number(e && e.total_tokens || 0) || (inTok + outTok);
+  if (!total && !hit && !miss) return '<span class="muted">—</span>';
+  const rows = ['<div class="m1">入: ' + fmtTokTight(inTok) +
+    ' <span class="sep">|</span> 出: ' + fmtTokTight(outTok) + '</div>'];
+  if (hit + miss > 0) {
+    const rate = hit / (hit + miss) * 100;
+    // 三档配色：≥80% 绿（前缀复用良好）、≥40% 琥珀、其余留灰（冷启动天然低，
+    // 标红只会制造噪音）。与用量页的「缓存命中率」kpi 同一份数据、同一套算法。
+    const cls = rate >= 80 ? 'ok' : rate >= 40 ? 'warn' : 'dim';
+    rows.push('<div class="m2 ' + cls + '">⚡ 缓: ' + fmtTokTight(hit) +
+      ' (' + cacheRateText(hit, miss) + ')</div>');
+  }
+  return rows.join('');
+}
+
+/* reqDurationCell 耗时列：上行总耗时，下行首字（TTFB）。
+   非流式请求没有首字观测（ttfb_ms 缺省），此时只留上行，不留占位破折号。 */
+function reqDurationCell(e) {
+  const total = fmtMs(e && e.duration_ms);
+  const ttfb = Number(e && e.ttfb_ms || 0);
+  let html = '<div class="m1">' + esc(total) + '</div>';
+  if (ttfb > 0) {
+    html += '<div class="m2 dim">首字: ' + esc(fmtMs(ttfb)) + '</div>';
+  }
+  return html;
 }
 
 function reqCreditCell(e) {
@@ -1000,7 +1030,9 @@ function reqCreditCell(e) {
 }
 
 /* renderRequestTable 渲染请求记录表。来源列是这一版的重点：IP 用等宽字体方便扫，
-   UA 单行截断（完整值在 title 里，行本身用 requestLogText 作 tooltip）。 */
+   UA 单行截断（完整值在各单元格自己的 title 里）。
+   行本身不再挂 title：思考档位、入/出拆分、缓存命中、首字都已经进列了，整行 tooltip
+   只是把同样的信息再念一遍，还挡住相邻行；被截断的 IP / UA / 请求 ID 各自带 title。 */
 function renderRequestTable() {
   const list = reqEntries.filter(e => reqMatch(e));
   const tb = $('reqBody');
@@ -1010,16 +1042,16 @@ function renderRequestTable() {
     const ip = e && e.client_ip ? e.client_ip : '';
     const ua = e && e.user_agent ? e.user_agent : '';
     const rid = e && e.request_id ? e.request_id : '';
-    return '<tr title="' + esc(requestLogText(e)) + '">' +
+    return '<tr>' +
       '<td class="num">' + esc(when) + '</td>' +
       '<td>' + reqOutcomeTag(e) + '</td>' +
-      '<td>' + esc(e && e.model || '—') + '</td>' +
+      '<td class="model">' + esc(e && e.model || '—') + '</td>' +
       '<td>' + reqReasoningCell(e) + '</td>' +
       '<td>' + esc(e && e.account || '—') + '</td>' +
       '<td>' + (ip ? '<span class="clip ip" title="' + esc(ip) + '">' + esc(ip) + '</span>' : '<span class="muted">—</span>') + '</td>' +
       '<td>' + (ua ? '<span class="clip" title="' + esc(ua) + '">' + esc(ua) + '</span>' : '<span class="muted">—</span>') + '</td>' +
-      '<td class="num">' + fmtMs(e && e.duration_ms) + '</td>' +
-      '<td class="num">' + reqTokenCell(e) + '</td>' +
+      '<td class="cell2">' + reqDurationCell(e) + '</td>' +
+      '<td class="cell2">' + reqTokenCell(e) + '</td>' +
       '<td class="num">' + reqCreditCell(e) + '</td>' +
       '<td>' + (rid ? '<span class="clip rid" title="' + esc(rid) + '">' + esc(rid) + '</span>' : '<span class="muted">—</span>') + '</td>' +
       '</tr>';
@@ -1037,8 +1069,8 @@ function renderRequestTable() {
 }
 
 /* 请求记录筛选控件。搜索框防抖 150ms：最多 1000 行重渲染，不必每键一次。
-   这段顶层绑定放在 requestLogText 之前，是为了让"纯函数切片"式前端测试
-   （slice requestLogText → fmtBytes）只拿到无副作用的格式化函数。 */
+   这段顶层绑定放在纯格式化函数之前，是为了让"纯函数切片"式前端测试
+   （slice reasoningText → fmtBytes）只拿到无副作用的格式化函数。 */
 let reqQTimer = null;
 if ($('reqQ')) $('reqQ').oninput = () => {
   clearTimeout(reqQTimer);
@@ -1056,41 +1088,14 @@ if ($('reqRange')) trangeBind('reqRange', loadLogs, '0');
 if ($('creditLimit')) $('creditLimit').onchange = loadCreditHistory;
 if ($('btnCreditReload')) $('btnCreditReload').onclick = loadCreditHistory;
 
-function requestLogText(e) {
-  const when = e && e.time ? new Date(e.time).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
-  const outcomeLabel = { success: '成功', http_error: 'HTTP 错误', stream_error: '流错误', interrupted: '中断' };
-  const token = Number(e && e.total_tokens || 0) ||
-    (Number(e && e.prompt_tokens || 0) + Number(e && e.completion_tokens || 0));
-  let credit = 'credit —';
-  if (e && e.credit_known) {
-    const value = Number(e.credit);
-    if (Number.isFinite(value)) credit = String(Number(value.toFixed(2))) + ' credit';
-  }
-  return [
-    when,
-    String(e && e.status || '—') + ' ' + (outcomeLabel[e && e.outcome] || (e && e.outcome) || '—'),
-    e && e.model || '—',
-    reasoningText(e),
-    e && e.account || '—',
-    e && e.client_ip || '—',
-    e && e.user_agent || '—',
-    fmtMs(e && e.duration_ms),
-    fmtTok(token) + ' tok',
-    credit,
-    cacheRateText(e && e.cache_hit_tokens, e && e.cache_miss_tokens) === '—' ? '' : '命中 ' + cacheRateText(e && e.cache_hit_tokens, e && e.cache_miss_tokens),
-    e && e.request_id || '—',
-  ].filter(Boolean).join(' | ');
-}
-
 /* reasoningText 把一条请求的「思考档位」渲染成单行标签：
    - 无档位信息（非推理模型 / 客户端未带 effort）→ 空串，调用方以 — 兜底；
    - 正常生效 → 生效档位（high / max …）；
    - 被降级 → 请求档→生效档（如 high→medium），这是最需要被看见的信息；
    - 显式关闭思考 → off。
    字段口径见 reqlog.Event.ReasoningEffort / ReasoningRequested / ReasoningOff。
-   位置要求：必须落在 requestLogText 与 fmtBytes 之间——前端纯函数切片测试只截取
-   这一段（frontend_test.go TestAppJSRequestLogFormatting），挪出去会让测试 VM
-   拿不到 reasoningText。 */
+   位置要求：必须留在 fmtBytes 之前——前端纯函数切片测试只截取
+   reasoningText → fmtBytes 这一段，挪出去会让测试 VM 拿不到本函数。 */
 function reasoningText(e) {
   if (e && e.reasoning_off) return 'off';
   const eff = e && e.reasoning_effort ? String(e.reasoning_effort) : '';
@@ -1110,7 +1115,7 @@ function reqReasoningCell(e) {
   return '<span class="tag ' + cls + ' eff">' + esc(text) + '</span>';
 }
 
-/* 缓存命中率纯文本（issue #92）：requestLogText 与积分表/kpi 卡共用。
+/* 缓存命中率纯文本（issue #92）：Token 消耗列与用量 kpi 卡共用。
    自包含（不依赖 trimFixed）：前端纯函数切片测试只截取本段。 */
 function cacheRateText(hit, miss) {
   const h = Number(hit || 0), m = Number(miss || 0), total = h + m;
@@ -2173,6 +2178,14 @@ function fmtMs(ms) {
   return Math.round(ms) + 'ms';
 }
 function fmtRate(r) { return r ? Number(r).toFixed(1) + ' tok/s' : '—'; }
+/* fmtTokTight 同 fmtTok，但去掉无意义的尾随零：104.0k → 104k、2.30M → 2.3M。
+   请求记录表的 Token 列是两行窄单元，多出来的「.0」纯占宽且降低扫读速度；
+   其它宽表仍用 fmtTok（保留定宽小数，纵向对齐更好看）。 */
+function fmtTokTight(n) {
+  const s = fmtTok(n);
+  const m = /^(\d+(?:\.\d+)?)([kMB])$/.exec(s);
+  return m ? String(parseFloat(m[1])) + m[2] : s;
+}
 function trimFixed(s) {
   if (!String(s).includes('.')) return String(s);
   return String(s).replace(/0+$/, '').replace(/\.$/, '');

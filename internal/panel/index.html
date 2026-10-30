@@ -558,11 +558,24 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .vtabs button.on .cnt { color: var(--ink-2); }
 
   /* ── 请求记录表（运行日志）────────────────────────────────────────── */
-  .acc.req { min-width: 1140px; }
+  .acc.req { min-width: 1260px; }
   .acc.req th, .acc.req td { padding: 8px 10px; }
   .acc.req tbody tr { cursor: default; }
   /* 思考档位列：等宽 + 表格数字对齐，`high→medium` 这类降级标记才能被一眼扫出来。 */
   .acc.req .tag.eff { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  /* Token / 耗时两列改为两行堆叠：上行主值，下行明细（缓存命中 / 首字）。
+     单列竖排换来「一行看全」，比原来一行 total 多一倍信息却不加宽表格。
+     这两列左对齐（而非 .num 的右对齐）：两行的前缀「入:」「⚡ 缓:」等宽，
+     左对齐后数字自然成列，右对齐反而让前缀参差。 */
+  .acc.req th.cell2, .acc.req td.cell2 { text-align: left; }
+  /* 模型名是标识符，折成两行比横向滚动更难读——表格本来就有 overflow:auto。 */
+  .acc.req td.model { white-space: nowrap; }
+  .acc.req td.cell2 .m1 { font: 600 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .acc.req td.cell2 .m2 { font: 11px/1.4 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 1px; }
+  .acc.req td.cell2 .sep { color: var(--line); font-weight: 400; }
+  .acc.req td.cell2 .m2.ok { color: var(--ok); }
+  .acc.req td.cell2 .m2.warn { color: var(--warn); }
+  .acc.req td.cell2 .m2.dim { color: var(--ink-3); }
   /* 请求记录最多可读 1000 条，不限高会把下面的「运行日志」推到很远的地方。
      限高 + 表头吸顶：滚动区域内始终能看到列名。 */
   .req-wrap { max-height: 460px; overflow: auto; }
@@ -1195,7 +1208,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <thead><tr>
               <th>时间</th><th>结果</th><th>模型</th><th>思考</th><th>账号</th>
               <th>来源 IP</th><th>User-Agent</th>
-              <th class="num">耗时</th><th class="num">Token</th><th class="num">积分</th><th>请求 ID</th>
+              <th class="cell2">耗时 / 首字</th><th class="cell2">Token 消耗</th><th class="num">积分</th><th>请求 ID</th>
             </tr></thead>
             <tbody id="reqBody"></tbody>
           </table>
