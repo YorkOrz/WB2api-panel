@@ -104,6 +104,15 @@ func compactJSON(raw json.RawMessage) string {
 // makeupYesterday 昨日漏签且有补签卡时自动补签（保住连登连续天数）。
 // 无卡 / 无漏签 / 查询失败均静默（不影响主流程）。
 func (s *Scheduler) makeupYesterday(a *auth.Auth) {
+	yday, ok := makeupTarget(time.Now())
+	if !ok {
+		// 上游补签卡只接受**当月**日期（400 only current month makeup allowed）：
+		// 每月 1 号的「昨日」必属上月，补签无解，跳过——否则每个月初固定刷一条
+		// 注定失败的日志（2026-11-01 实测 3 个账号各刷一条）。
+		log.Printf("streak-bonus %s: 月初跨月，%s 无法补签（上游仅支持当月），连登已断",
+			logfmt.Label(a.UID, a.Nickname), yday.Format("2006-01-02"))
+		return
+	}
 	missed, err := s.cfg.Upstream.HeatmapYesterdayMissed(a)
 	if err != nil || !missed {
 		return
@@ -112,10 +121,17 @@ func (s *Scheduler) makeupYesterday(a *auth.Auth) {
 	if err != nil || full.MakeupCards.Balance <= 0 {
 		return
 	}
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	yesterday := yday.Format("2006-01-02")
 	if err := s.cfg.Upstream.UseMakeupCard(a, yesterday); err != nil {
 		log.Printf("streak-bonus %s: 补签 %s 失败: %v", logfmt.Label(a.UID, a.Nickname), yesterday, err)
 		return
 	}
 	log.Printf("streak-bonus %s: ★ 已用补签卡补签 %s（保连登）", logfmt.Label(a.UID, a.Nickname), yesterday)
+}
+
+// makeupTarget 返回「昨日」及是否可补签：上游补签卡仅接受当月日期，昨日跨月
+// （即每月 1 号）时返回 ok=false——此时补签必然 400，调用方应跳过而非记失败。
+func makeupTarget(now time.Time) (time.Time, bool) {
+	y := now.AddDate(0, 0, -1)
+	return y, y.Year() == now.Year() && y.Month() == now.Month()
 }
