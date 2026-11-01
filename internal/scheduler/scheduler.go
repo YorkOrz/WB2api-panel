@@ -5,7 +5,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
@@ -86,6 +86,12 @@ type Scheduler struct {
 	globalActivityLast     map[string]GlobalActivityResult
 	globalActivityReported map[string]string
 
+	// activityMu/activityReportedDay 记录「今天已给某账号发过 CN 活跃上报」：热力图
+	// 聚合有数秒到数分钟延迟，activity_hours 配多个时点（如 10/21）时用它避免同一
+	// 自然日重复上报（与 globalActivityReported 同语义，进程重启清零）。
+	activityMu          sync.Mutex
+	activityReportedDay map[string]string
+
 	// mu/adoptTried 领养当日失败记录：uid → 自然日（CST）。门槛未达的账号当日不再重试，
 	// 避免同日多趟对上游重试轰炸；进程重启即清零（无需持久化）。
 	mu         sync.Mutex
@@ -135,6 +141,7 @@ func New(cfg Config) *Scheduler {
 		adoptTried:             make(map[string]string),
 		globalActivityLast:     make(map[string]GlobalActivityResult),
 		globalActivityReported: make(map[string]string),
+		activityReportedDay:    make(map[string]string),
 		rearmSchedule:          make(chan struct{}, 1),
 		rearmBalance:           make(chan struct{}, 1),
 		rearmSweep:             make(chan struct{}, 1),
@@ -557,8 +564,8 @@ func (s *Scheduler) RunCheckinNow() {
 	s.RunStreakBonusNow()
 }
 
-// RunActivityNow 立即对池内所有可用账号执行活跃维护：CN 走原有盲上报，
-// Global 走热力图幂等补跑。
+// RunActivityNow 立即对池内所有可用账号执行活跃维护：CN 与 Global 都是「先读热力图、
+// 未点亮才上报」（CN 读失败退回盲上报，Global 读失败不发；口径差异见 runActivity 注释）。
 // 禁用账号默认跳过（schedule.include_disabled_in_tasks 打开时一并上报）；
 // 无 AccessToken 的跳过；账号间限速 activityAccountDelay。
 // CN 上报成功后继续跑 streak 自检（checkActivityStreak）：回读连登天数，
@@ -591,8 +598,9 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 		if a.IsEnterpriseSession() {
 			continue
 		}
-		// Global 由独立排程先读热力图再决定是否上报。这里只处理 CN，避免共享
-		// activity_hours 的多时点把 CN 重复计分，也避免 Global 绕过幂等门禁。
+		// Global 由独立排程（global_activity.go）处理：它的时点来自
+		// global_activity_hours，与这里共享的 activity_hours 不是同一组，不能混跑，
+		// 否则 Global 会绕过自己那份幂等门禁与状态快照。
 		if a.IsGlobal() {
 			continue
 		}
@@ -602,13 +610,56 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 			}
 		}
 		first = false
-		cid := fmt.Sprintf("wb2api-%d", time.Now().UnixMilli())
+		// 先读热力图再决定是否上报（幂等门禁）：今日已点亮就跳过——既省一次请求，
+		// 也让 activity_hours 配多个时点（如 10/21）成为「当天兜底」：10 点那趟失败
+		// 或漏跑，21 点这趟会补上，不会像 2026-10-31 那样整天 score=0 断连登。
+		day, err := s.cfg.Upstream.GrowthHeatmapTodayAny(a)
+		switch {
+		case err != nil:
+			// 读失败退回盲上报：CN 只有上报这一条点亮路径，漏报等于断连登。
+			// Global 相反（读不到就不发），两域口径不同，见 global_activity.go。
+			log.Printf("activity %s: 热力图读取失败，退回盲上报: %v", logfmt.Label(a.UID, a.Nickname), err)
+		case day.Lit:
+			log.Printf("activity %s: 今日已点亮（%s score=%d），跳过上报",
+				logfmt.Label(a.UID, a.Nickname), day.Day, day.Score)
+			continue
+		case s.activityReportedToday(a.UID, day.Day):
+			log.Printf("activity %s: 今日已上报过（%s），等热力图聚合",
+				logfmt.Label(a.UID, a.Nickname), day.Day)
+			continue
+		}
+		// 官方会话/请求 ID 是 32 位随机 hex；带项目前缀的时间戳会形成客户端指纹
+		//（与 global_activity.go 同口径）。
+		cid := session.NewMessageID()
 		if err := s.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
 			log.Printf("activity %s: %v", logfmt.Label(a.UID, a.Nickname), err)
 			continue
 		}
+		if day != nil {
+			s.markActivityReported(a.UID, day.Day)
+		}
 		s.checkActivityStreak(a) // 上报成功 → 回读 streak 自检
 	}
+}
+
+// activityReportedToday 报告今天是否已为该账号发过活跃上报（进程内记录）。
+func (s *Scheduler) activityReportedToday(uid, day string) bool {
+	if day == "" {
+		return false
+	}
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	return s.activityReportedDay[uid] == day
+}
+
+// markActivityReported 记录今天已为该账号发过活跃上报。
+func (s *Scheduler) markActivityReported(uid, day string) {
+	if day == "" {
+		return
+	}
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	s.activityReportedDay[uid] = day
 }
 
 // checkActivityStreak 上报成功后回读连登天数（只读 oracle，发现静默失败）。

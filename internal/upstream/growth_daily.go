@@ -30,8 +30,8 @@ type GrowthDayStatus struct {
 	ReadAt  time.Time `json:"read_at"`
 }
 
-// GrowthHeatmapToday 读取账号所在域的热力图，以最后一个 cell 为“今天”。
-// 该端点属于 billing 域：Global 必须走 BillingBaseGlobal，CN 不能误打。
+// GrowthHeatmapToday 读取 Global 账号所在域的热力图，以最后一个 cell 为“今天”。
+// 该端点属于 billing 域：Global 必须走 BillingBaseGlobal。
 func (c *Client) GrowthHeatmapToday(a *auth.Auth) (*GrowthDayStatus, error) {
 	if a == nil {
 		return nil, fmt.Errorf("growth heatmap: nil account")
@@ -39,7 +39,30 @@ func (c *Client) GrowthHeatmapToday(a *auth.Auth) (*GrowthDayStatus, error) {
 	if !a.IsGlobal() {
 		return nil, fmt.Errorf("growth heatmap: not a Global account")
 	}
-	data, err := c.billingJSON(a, http.MethodGet, growthHeatmapPath, nil)
+	return c.growthHeatmapToday(a)
+}
+
+// GrowthHeatmapTodayAny 同 GrowthHeatmapToday，但不限 realm：Global 走 billing 域，
+// CN 走 chat 域（与 HeatmapYesterdayMissed 同口径）。CN 两个域实测同源同数据，
+// 保留 realm 分流只为与各自既有调用点保持一致。供 CN 每日活跃兜底复用
+// 「先读热力图再决定是否上报」的幂等门禁。
+func (c *Client) GrowthHeatmapTodayAny(a *auth.Auth) (*GrowthDayStatus, error) {
+	if a == nil {
+		return nil, fmt.Errorf("growth heatmap: nil account")
+	}
+	return c.growthHeatmapToday(a)
+}
+
+func (c *Client) growthHeatmapToday(a *auth.Auth) (*GrowthDayStatus, error) {
+	var (
+		data json.RawMessage
+		err  error
+	)
+	if a.IsGlobal() {
+		data, err = c.billingJSON(a, http.MethodGet, growthHeatmapPath, nil)
+	} else {
+		data, err = c.growthJSON(a, http.MethodGet, growthHeatmapPath, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
