@@ -55,6 +55,10 @@ var GlobalModelNames = []string{
 // Mutex 内嵌，与 modelList 无并发读路径竞争（唯一读写点本文件内）。
 type fetchGlobalModelsCache struct {
 	sync.Mutex
+	// probeMu 单飞锁：缓存失效瞬间的并发请求只放一个去探测上游，其余排队后复用
+	// 结果。与 CN 侧 modelsFetchMu 同因（2026-11-02 断网实测并发穿透放大故障）。
+	// 独立于内嵌 Mutex——探测要花几秒，不能持缓存锁做网络 IO。
+	probeMu  sync.Mutex
 	names    []string    // 成功缓存：并集模型名（已去重）；nil = 未探测/失败
 	infos    []ModelInfo // 成功缓存：对象形态的全字段条目（窄表/失败形态为 nil）
 	fetched  time.Time
@@ -99,7 +103,8 @@ func (c *Client) FetchGlobalModelInfos(a *auth.Auth) []ModelInfo {
 }
 
 // fetchGlobalModelsOnce 单次探测决策（缓存命中/负缓存/触发探测），返回 (names, infos)。
-// 纯动态：成功 = 并集结果去重；一切失败 = nil（不回落静态）。
+// 纯动态：成功 = 并集结果去重；探测失败 = 回落到上次成功的目录（stale 好过空，
+// 断网时把模型全摘掉会让客户端判定"模型不存在"）；从没成功过才返回 nil。
 // infos 仅对象形态成功探测时非 nil。
 func (c *Client) fetchGlobalModelsOnce(a *auth.Auth) (names []string, infos []ModelInfo) {
 	if !c.globalOn(a) {
@@ -114,21 +119,38 @@ func (c *Client) fetchGlobalModelsOnce(a *auth.Auth) (names []string, infos []Mo
 		return names, infos
 	}
 	if !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
-		// 负缓存冷却期内：避免反复打上游，直接按失败处理（无静态回落）。
+		// 负缓存冷却期内：避免反复打上游，回落到上次成功的目录。
+		names, infos := c.globalModels.names, c.globalModels.infos
 		c.globalModels.Unlock()
-		return nil, nil
+		return names, infos
+	}
+	c.globalModels.Unlock()
+
+	// 单飞：排队期间可能已有别的请求探测完，拿到锁后先二次检查。
+	c.globalModels.probeMu.Lock()
+	defer c.globalModels.probeMu.Unlock()
+	c.globalModels.Lock()
+	if len(c.globalModels.names) > 0 && time.Since(c.globalModels.fetched) < globalModelsTTL {
+		names, infos := c.globalModels.names, c.globalModels.infos
+		c.globalModels.Unlock()
+		return names, infos
+	}
+	if !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
+		names, infos := c.globalModels.names, c.globalModels.infos
+		c.globalModels.Unlock()
+		return names, infos
 	}
 	c.globalModels.Unlock()
 
 	names, infos, efforts, defaults, err := c.probeGlobalModels(a)
 	if err != nil || len(names) == 0 {
-		// 探测失败：负缓存 + 返回 nil（effort 桶不写，prepareBody 走 globalEffortMap 静态兜底）。
+		// 探测失败：只记负缓存，**保留上次成功的目录**（effort 桶不写，
+		// prepareBody 走 globalEffortMap 静态兜底）。
 		c.globalModels.Lock()
 		c.globalModels.lastFail = time.Now()
-		c.globalModels.names = nil
-		c.globalModels.infos = nil
+		staleNames, staleInfos := c.globalModels.names, c.globalModels.infos
 		c.globalModels.Unlock()
-		return nil, nil
+		return staleNames, staleInfos
 	}
 	// global 域 effort 能力：探测下发的 supportedEfforts/defaultEffort 权威写入 global 桶
 	// （raw remote，不并入静态表——静态兜底在 prepareBody 的 globalEffortMap 与
@@ -288,10 +310,11 @@ func mergeV3Routes(routes []struct {
 }) probeResult {
 	var out probeResult
 	var firstErr error
+	var failed []string
 	nOK := 0
 	for _, r := range routes {
 		if r.res.err != nil {
-			log.Printf("WARN: [upstream] global models: v3/config %s probe failed: %v", r.label, r.res.err)
+			failed = append(failed, r.label)
 			if firstErr == nil {
 				firstErr = r.res.err
 			}
@@ -306,6 +329,11 @@ func mergeV3Routes(routes []struct {
 		// 后续成功路：只补缺失的 id。
 		mergedNames, mergedInfos := mergeGlobalCatalog(out.names, out.infos, r.res.names, r.res.infos)
 		out.names, out.infos = mergedNames, mergedInfos
+	}
+	// 一轮一行：三路 UA 各打一条会在断网时把日志刷爆（2026-11-02 实测单轮 24 行）。
+	if len(failed) > 0 {
+		log.Printf("WARN: [upstream] global models: v3/config %d/%d 路失败 (%s): %v",
+			len(failed), len(routes), strings.Join(failed, ","), firstErr)
 	}
 	if nOK == 0 {
 		return probeResult{err: firstErr}

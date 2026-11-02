@@ -296,6 +296,11 @@ var dynamicModelsCache struct {
 	lastFail time.Time // 最近一次拉取失败时间（负缓存）
 }
 
+// modelsFetchMu 单飞锁：缓存失效瞬间的并发 /v1/models 请求只放一个去探测上游，
+// 其余排队后复用结果。2026-11-02 断网实测 285 次失败 vs 理论 78 轮（5min 冷却），
+// 就是并发请求各自穿透缓存同时打上游造成的自我放大。
+var modelsFetchMu sync.Mutex
+
 const (
 	// dynamicModelsTTL 模型目录缓存时长。曾是 1h；缩到 10min 对齐「面板实时、
 	// API 缓存」的漂移痛点（PR #38 报告）：目录新增模型时面板立即可见，公开
@@ -499,10 +504,28 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 		dynamicModelsCache.RUnlock()
 		return out
 	}
-	// 失败负缓存：冷却期内不再请求上游。
+	// 失败负缓存：冷却期内不再请求上游，但**回落到上次成功的目录**——断网时把
+	// 模型全摘掉会让客户端判定"模型不存在"，stale 列表远好过空列表。
 	if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
+		out := dynamicModelsCache.ids
 		dynamicModelsCache.RUnlock()
-		return nil
+		return out
+	}
+	dynamicModelsCache.RUnlock()
+
+	// 单飞：排队期间可能已有别的请求探测完，拿到锁后先二次检查缓存/负缓存。
+	modelsFetchMu.Lock()
+	defer modelsFetchMu.Unlock()
+	dynamicModelsCache.RLock()
+	if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
+		out := dynamicModelsCache.ids
+		dynamicModelsCache.RUnlock()
+		return out
+	}
+	if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
+		out := dynamicModelsCache.ids
+		dynamicModelsCache.RUnlock()
+		return out
 	}
 	dynamicModelsCache.RUnlock()
 
@@ -524,12 +547,14 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 		if err == nil {
 			err = fmt.Errorf("models api returned empty list")
 		}
-		log.Printf("WARN: [server] /v1/models: CN 模型目录拉取失败（%s 内不再重试，cn: 模型暂不列出）: %v",
-			modelsFetchFailCooldown, err)
 		dynamicModelsCache.Lock()
 		dynamicModelsCache.lastFail = time.Now()
+		stale := dynamicModelsCache.ids
+		staleAt := dynamicModelsCache.fetched
 		dynamicModelsCache.Unlock()
-		return nil
+		log.Printf("WARN: [server] /v1/models: CN 模型目录拉取失败（%s 内不再重试，%s）: %v",
+			modelsFetchFailCooldown, staleCatalogNote(len(stale), staleAt), err)
+		return stale
 	}
 	dynamicModelsCache.Lock()
 	dynamicModelsCache.ids = infos
@@ -537,6 +562,15 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	dynamicModelsCache.lastFail = time.Time{} // 成功则清空负缓存
 	dynamicModelsCache.Unlock()
 	return infos
+}
+
+// staleCatalogNote 描述失败时的回落来源（日志用）：有上次成功的目录就报它的年龄
+// 与条数，从没成功过则明确说无可用缓存。
+func staleCatalogNote(n int, at time.Time) string {
+	if n == 0 || at.IsZero() {
+		return "无可用缓存，cn 模型暂不列出"
+	}
+	return fmt.Sprintf("回落到 %s 前的 %d 个模型", time.Since(at).Round(time.Second), n)
 }
 
 // cachedModelsSnapshot 只读模型目录缓存（TTL 内快照）；缓存冷/空 → nil。

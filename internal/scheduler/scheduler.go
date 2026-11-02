@@ -71,7 +71,9 @@ type Config struct {
 	// TaskSweepHook 任务补领清扫回调（panel.RunTaskSweepOnce：把「已达标未领」
 	// 的任务奖励领掉，不跑任何行为链路）。与 GrowthHook 同款延迟挂载；nil 时
 	// ticker 到点跳过。见 issue #174：成长队列与「一键完成」都不负责这条补领链路。
-	TaskSweepHook func()
+	// 返回 (出错次数, 参与账号数)：整轮全失败时 ticker 退避，断网期间不再按原
+	// 频率硬打上游（2026-11-02 实测 6.5h 内 24 轮全失败仍每 15 分钟一轮）。
+	TaskSweepHook func() (errors, accounts int)
 }
 
 // Scheduler 调度器。
@@ -690,8 +692,13 @@ func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 // 12153 禁用走 Pool.NoteSessionDead 的**连续计数**语义：一次刷新失败不再立即杀号，
 // 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
 // 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
+// keepaliveAccountDelay token 刷新账号间隔：refresh 端点对同一出口 IP 有短时限流，
+// 四个号背靠背刷新会撞 429（2026-11-01/02 每天 22:00:00 都出现）。测试可置 0。
+var keepaliveAccountDelay = 1500 * time.Millisecond
+
 func (s *Scheduler) RunKeepaliveNow() {
 	includeDisabled := s.includeDisabledInTasks()
+	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled && !includeDisabled {
 			continue
@@ -700,6 +707,10 @@ func (s *Scheduler) RunKeepaliveNow() {
 		if a == nil || a.RefreshTokenValue() == "" {
 			continue
 		}
+		if !first && keepaliveAccountDelay > 0 {
+			time.Sleep(keepaliveAccountDelay)
+		}
+		first = false
 		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
 			log.Printf("keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
 			var ue *upstream.Error
@@ -737,8 +748,9 @@ func poolExpiryBuckets(in []upstream.ExpiryBucket) []pool.ExpiryBucket {
 // 解冻语义与签到一致（ReenableIfCredits：余额 > 0 的冷却账号自动解冻），
 // 但不做签到、不刷新 token——只让"积分"这个观测量保持新鲜。
 // 供两类入口复用：后台周期任务（StartBalanceRefresh）与面板手动全量刷新。
-func (s *Scheduler) RunBalanceRefreshNow() {
+func (s *Scheduler) RunBalanceRefreshNow() (failed, total int) {
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
@@ -749,12 +761,16 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 		if a == nil {
 			continue
 		}
+		total++
 		wg.Add(1)
 		go func(a *auth.Auth, uid string) {
 			defer wg.Done()
 			remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
 			if err != nil {
 				log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
+				mu.Lock()
+				failed++
+				mu.Unlock()
 				return
 			}
 			s.cfg.Pool.ReenableIfCredits(uid, remain, total)
@@ -770,6 +786,45 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 	}
 	wg.Wait()
 	s.lastBalanceRefresh.Store(time.Now().UnixNano())
+	return failed, total
+}
+
+// backoffMaxInterval 连续失败退避的封顶间隔：再久也要保持一次探测机会，
+// 否则网络恢复后要等很久才自动回到正常节奏。
+const backoffMaxInterval = 40 * time.Minute
+
+// backoffInterval 连续 fails 轮「整轮全失败」后的等待间隔：按 2^fails 放大并
+// 封顶 backoffMaxInterval。fails<=0 或 base<=0 原样返回。
+// 背景（2026-11-02）：14:00–20:32 断网，余额刷新与补领清扫仍按原频率硬打上游，
+// 6.5 小时内产生 200+ 条失败日志——退避是为了别在已经挂掉的上游上继续加负载。
+func backoffInterval(base time.Duration, fails int) time.Duration {
+	if base <= 0 || fails <= 0 {
+		return base
+	}
+	d := base
+	for i := 0; i < fails && d < backoffMaxInterval; i++ {
+		d *= 2
+	}
+	if d > backoffMaxInterval {
+		d = backoffMaxInterval
+	}
+	return d
+}
+
+// nextFailStreak 更新连续「整轮全失败」计数：有账号成功（failed < total）即清零，
+// 全部失败才累加（上限 5，避免无限增长；间隔早已封顶）。
+// total<=0（本轮没账号参与）视为无结论，保持原值不变。
+func nextFailStreak(cur, failed, total int) int {
+	if total <= 0 {
+		return cur
+	}
+	if failed < total {
+		return 0
+	}
+	if cur >= 5 {
+		return 5
+	}
+	return cur + 1
 }
 
 // StartBalanceRefresh 后台周期性余额刷新（独立 ticker goroutine，ctx 取消即停）。
@@ -785,7 +840,8 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 		// 启动即刷一轮：进程重启（含升级到带按日批次的版本）后旧 state 可能没有
 		// credits_expiry_buckets；不等第一个 ticker，首页快照就能拿到与「检查」
 		// 同口径的完整数据，避免升级后前 5 分钟仍显示旧口径。
-		s.RunBalanceRefreshNow()
+		failed, total := s.RunBalanceRefreshNow()
+		fails := nextFailStreak(0, failed, total)
 		var logged time.Duration
 		for {
 			cur := time.Duration(s.balanceInterval.Load())
@@ -802,7 +858,12 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			// 整轮全失败时退避（2026-11-02 断网 6.5h：每 5 分钟硬打上游，207 条失败）。
+			wait := backoffInterval(cur, fails)
+			if wait != cur {
+				log.Printf("scheduler: 余额刷新连续 %d 轮全失败，本轮退避到 %s", fails, wait)
+			}
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -810,7 +871,8 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 			case <-s.rearmBalance:
 				timer.Stop() // 间隔已变：立刻按新值重算
 			case <-timer.C:
-				s.RunBalanceRefreshNow()
+				failed, total := s.RunBalanceRefreshNow()
+				fails = nextFailStreak(fails, failed, total)
 			}
 		}
 	}()
@@ -830,6 +892,7 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 	s.sweepInterval.Store(int64(interval))
 	go func() {
 		var logged time.Duration
+		fails := 0
 		for {
 			cur := time.Duration(s.sweepInterval.Load())
 			if cur != logged {
@@ -845,7 +908,12 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			// 整轮全失败时退避（与余额刷新同口径）：断网期间别再每 15 分钟硬打。
+			wait := backoffInterval(cur, fails)
+			if wait != cur {
+				log.Printf("scheduler: 任务补领清扫连续 %d 轮全失败，本轮退避到 %s", fails, wait)
+			}
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -857,7 +925,8 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 				hook := s.cfg.TaskSweepHook
 				s.schedMu.Unlock()
 				if hook != nil {
-					hook()
+					errs, accounts := hook()
+					fails = nextFailStreak(fails, errs, accounts)
 				}
 			}
 		}
@@ -875,7 +944,7 @@ func (s *Scheduler) RunTaskSweepNow() {
 }
 
 // SetTaskSweepHook 挂载/替换任务补领清扫回调（panel 构造晚于 scheduler，事后接线）。
-func (s *Scheduler) SetTaskSweepHook(fn func()) {
+func (s *Scheduler) SetTaskSweepHook(fn func() (errors, accounts int)) {
 	s.schedMu.Lock()
 	s.cfg.TaskSweepHook = fn
 	s.schedMu.Unlock()

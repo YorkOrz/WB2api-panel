@@ -329,9 +329,12 @@ func main() {
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
 	sch.SetGrowthHook(pn.RunGrowthQueueOnce)
-	// 清扫回调返回统计汇总（测试/日志可观测），调度器 hook 只要求 func()：
-	// 这里收掉返回值——汇总已由 panel 侧内部日志输出。
-	sch.SetTaskSweepHook(func() { pn.RunTaskSweepOnce() })
+	// 清扫回调返回统计汇总：调度器据 (errors, accounts) 判断整轮是否全失败，
+	// 全失败时退避（断网期间不再每 15 分钟硬打上游）。日志仍由 panel 侧输出。
+	sch.SetTaskSweepHook(func() (int, int) {
+		st := pn.RunTaskSweepOnce()
+		return st.Errors, st.Accounts
+	})
 	log.SetOutput(io.MultiWriter(os.Stderr, pn.Logs()))
 	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
 
